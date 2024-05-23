@@ -22,7 +22,7 @@ Filtered count matrices can be downloaded from GEO (GSE181907): https://www.ncbi
 ## Import count matrices and gene names
 
 ```{r}
-#Replace directory after dowload
+#Set to your download directory
 ddir <- "~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/raw/CellRanger_LY/"
 matrix_dir = paste0(ddir, "LY021121_filtered_feature_bc_matrix/")
 
@@ -89,7 +89,8 @@ matrices <- lapply(seq_along(files), function(i) {
 })
 names(matrices) <- ids
 ```
-Problematic gene names, where dashes were substituted with dots
+
+Replace problematic gene names, where dashes were substituted with dots
 ```{r}
 library(STACAS)
 # load gene symbols dataset
@@ -312,25 +313,6 @@ a | b
 table(bcc_7LY$scGate_multi, useNA = "ifany")
 table(bcc_7LY$scGate_multi, bcc_7LY$Sample, useNA = "ifany")
 ```
-
-# Try integration
-
-```{r eval=F}
-library(STACAS)
-obj.list <- SplitObject(bcc_7LY, split.by = "Sample")
-
-data_integrated <- Run.STACAS(obj.list, cell.labels = "scGate_multi")
-```
-
-```{r eval=F fig.width=12}
-data_integrated <- RunUMAP(data_integrated, reduction = "pca", dims = 1:30)
-
-a <- DimPlot(data_integrated, reduction = "umap", group.by = "Sample") + theme(aspect.ratio = 1)
-b <- DimPlot(data_integrated, group.by = "scGate_multi", label = T, repel = T, label.size = 2) +
-    theme(aspect.ratio = 1) + ggtitle("scGate annotation")
-a | b
-```
-
 
 ## Save
 ```{r}
