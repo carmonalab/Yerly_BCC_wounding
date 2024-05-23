@@ -1,0 +1,630 @@
+---
+title: "Apply NMF on BCC samples"
+author: "Massimo Andreatta and Laura Yerly"
+date: "`r format(Sys.Date(),'%e de %B, %Y')`"
+output: 
+  rmdformats::downcute:
+    lightbox: true
+    thumbnails: false
+    self_contained: true
+    gallery: true
+    code_folding: show
+  pkgdown:
+    as_is: true
+---
+
+```{r, include=FALSE, fig.width=16, fig.height=12}
+renv::restore()
+library(Seurat)
+library(ggplot2)
+library(SignatuR)
+library(UCell)
+library(patchwork)
+library(tidyr)
+library(dplyr)
+library(RColorBrewer)
+library(viridis)
+library(GeneNMF)
+library(openxlsx)
+library(ggcorrplot)
+library(corrr)
+```
+
+
+
+## Set the paths
+
+Read in source data
+```{r}
+data.path <- '~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/rds/Tumor_combination_LY_CG.rds'
+#data.path <- "cache/Tumor_combination_LY_CG.rds"
+seu <- readRDS(data.path)
+```
+
+Read in meta-programs (MPs) learned from the data using the script `2-NMF.Rmd`
+```{r}
+nmf.genes <- readRDS("cache/NMF_meta_res.rds")
+```
+
+
+# Intepretation of gene programs
+
+Also include Nod-Inf signature for control
+```{r}
+morphologySignatures <- read.csv("_aux/spatialSignatures.csv")
+morphologySignatures <- as.list(morphologySignatures)
+morphologySignatures <- lapply(morphologySignatures, function(x) x[x!=""])
+# a different universe (1800-gene panel) required for this GSEA
+```
+
+# Intepretation of filtered MPs based on Gavish et al pan-cancer gene meta programs
+
+Compare MPs to Gavish MPs
+
+```{r}
+query_signature_list <- nmf.genes$metaprograms.genes
+
+geneUniverse <- rownames(seu)[seu@assays$RNA@meta.features$vst.variance>0.01] 
+#geneUniverse <- rownames(seu) 
+reference_signature_list <- read.csv("_aux/Tirosh_malignantAndEpithelial_meta_programs_2023-07-13.csv")
+reference_signature_list <- as.list(reference_signature_list)
+reference_signature_list <- lapply(reference_signature_list, function(x) x[x!=""])
+
+# unknown gene symbols?
+refGenes <- unique(unlist(reference_signature_list))
+unknownGenes <- refGenes[!refGenes %in% rownames(seu)]
+unknownGenes
+length(unknownGenes)/length(refGenes)*100 
+# 6% gene symbols not mapped/detected
+
+reference_signature_list <- lapply(reference_signature_list, function(x) x[!x %in% unknownGenes])
+
+pval.thr <- 0.01
+
+top_p <- lapply(query_signature_list, function(query_signature) {
+  fgRes <- fgsea::fora(pathways = reference_signature_list,
+                       genes = query_signature,
+                       universe = geneUniverse)
+  
+  fgRes <- fgRes[fgRes$padj <= pval.thr,]
+  
+  
+})
+
+for (metaprogram in names(query_signature_list)) {
+  
+  top_p[[metaprogram]] <- cbind(metaprogram, top_p[[metaprogram]])
+  print(head(top_p[[metaprogram]],20))
+  
+  top_p[[metaprogram]] <- mutate(top_p[[metaprogram]], qscore = -log(padj, base=10))
+  top_p[[metaprogram]] <- mutate(top_p[[metaprogram]], geneRatio = round(overlap/size,3))
+  top_p[[metaprogram]]$pathway <- factor(top_p[[metaprogram]]$pathway,levels=top_p[[metaprogram]]$pathway)
+}
+```
+
+```{r}
+enrich.list <- list()
+for (i in names(top_p)){
+  enrich.list[[i]] <- cbind(MP=i,top_p[[i]][,c("pathway","overlap","size")])
+}
+
+enrich.df <- do.call(rbind, enrich.list)
+enrich.df <- as.data.frame(enrich.df)
+
+#remove NAs
+#enrich.df <- enrich.df[!is.na(enrich.df$pathway),]
+
+enrich.df$Overlap_pct <- round(enrich.df$overlap/enrich.df$size*100)
+enrich.df$Overlap_pct[is.na(enrich.df$Overlap_pct)] <- 0
+#enrich.df$minLogPadj[enrich.df$minLogPadj > 10] <- 10
+#enrich.df <- enrich.df[!is.na(enrich.df$padj),]
+enrich.df
+# Heatmap 
+ggplot(enrich.df, aes(MP, pathway, fill= Overlap_pct)) + geom_tile() +
+  scale_fill_gradient(low="white", high="blue", limits=c(0,80)) + theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+ggsave("plots/heatmap.Gavish_MP_enrichmentRefGeneOverlap.pdf", width=4.5, height=5)
+
+#Horizontal?
+ggplot(enrich.df, aes(pathway, MP, fill= Overlap_pct)) + geom_tile() +
+  scale_fill_gradient(low="white", high="blue", limits=c(0,80)) + theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggsave("plots/heatmap.Gavish_MP_enrichmentRefGeneOverlap_flip.pdf", width=8, height=3.5)
+
+```
+
+
+Compare MPs to annotated signatures in msigDB 
+```{r}
+#geneCounts <- apply(seu@assays$RNA@data,1,sum)
+#geneUniverse <- names(geneCounts[geneCounts>0])
+geneUniverse <- rownames(seu) # very similar genes
+```
+
+
+```{r}
+enrichmentSignatures <- c(nmf.genes$metaprograms.genes)
+top_p <- lapply(enrichmentSignatures, function(metaprogram) {
+  runGSEA(metaprogram, universe=geneUniverse, category = "C5", subcategory = "GO:BP")
+#  runGSEA(metaprogram, universe=rownames(seu), category = "C2", subcategory = "CP:WIKIPATHWAYS")
+})
+```
+
+
+```{r}
+min.overlap <- 3
+for (metaprogram in names(enrichmentSignatures)) {
+  
+  tab <- top_p[[metaprogram]]
+  tab <- tab[tab$overlap >= min.overlap,]
+  tab <- cbind(metaprogram, tab)
+  
+  tab <- mutate(tab, qscore = -log(padj, base=10))
+  tab <- mutate(tab, geneRatio = round(overlap/size,3))
+  tab$pathway <- factor(tab$pathway,levels=tab$pathway)
+  #tab <- mutate(tab, path = substr(pathway,1,40))
+  top_p[[metaprogram]] <- tab
+  print(head(tab,15))
+}
+
+```
+
+```{r}
+enrichDotplot <- list()
+cols <- brewer.pal(9, 'Blues')[3:9]
+
+for (metaprogram in names(enrichmentSignatures)) {
+
+  maxsize <- max(top_p[[metaprogram]]$overlap)
+
+  enrichDotplot[[metaprogram]] <- ggplot(top_p[[metaprogram]][1:10,], aes(x = qscore, y = pathway,
+                                                                          color = geneRatio, size = overlap)) + 
+  geom_point(stat = 'identity') +
+    scale_colour_gradientn(colours = cols) + #lims(size = c(1,maxsize)) +
+#    scale_size(range=c(1,10), breaks = seq(1, maxsize, 3)) +
+  xlab("-log(adjusted p-value)") + ylab("path") + ggtitle(metaprogram) + 
+  theme_bw()
+}
+
+enrichDotplot
+
+wp <- wrap_plots(enrichDotplot,ncol = 2)
+ggsave("plots/enrichmentPlots.pdf",wp, width = 18, height = 15)
+```
+
+
+```{r}
+write.xlsx(top_p, "_aux/GSEA_MP.xlsx")
+#write.xlsx(top_p, "aux/GSEA_MP_WIKIPATHWAYS.xlsx")
+```
+
+
+Annotate these signatures
+```{r}
+signature_lgt <- 200
+sigs <- lapply(nmf.genes$metaprograms.genes, function(x) {
+  lgt <- min(length(x), signature_lgt)
+  head(x, lgt)
+})
+```
+
+
+Label MPs
+
+```{r}
+names(sigs)[1] <- "MP1.CC"
+names(sigs)[2] <- "MP2"
+names(sigs)[3] <- "MP3.ED"
+names(sigs)[4] <- "MP4"
+names(sigs)[5] <- "MP5"
+names(sigs)[6] <- "MP6"
+names(sigs)[7] <- "MP7.WR"
+sigs <- sigs[!is.na(names(sigs))]
+```
+
+```{r}
+sigs
+write.xlsx(sigs, "_aux/markers.raw.MP.xlsx")
+```
+
+Define cells and samples based on these signatures
+```{r}
+seu <- AddModuleScore_UCell(seu, features = sigs, assay="RNA", ncores=4, name = "")
+```
+
+# Determine strongest markers associated with each MP
+
+Calculate to 20% and bottom 20% scores for each MP
+```{r}
+library(ProjecTILs)
+markers.MP.list <- list()
+set.seed(1234)
+for (i in names(sigs)){
+  i_class <- paste0(i,"_class")
+  seu@meta.data[[i_class]] <- NA
+  my_high_val <- quantile(seu@meta.data[[i]],p=c(0.80))
+  seu@meta.data[[i_class]][seu@meta.data[[i]] > my_high_val] <- "high"
+  
+  my_low_val <- quantile(seu@meta.data[[i]],p=c(0.20))
+  seu@meta.data[[i_class]][seu@meta.data[[i]] < my_low_val] <- "low"
+  
+  table(seu@meta.data[[i_class]],seu$Sample)
+  
+  Idents(seu) <- seu@meta.data[[i_class]]
+  markers.MP.list[[i]] <- ProjecTILs::FindAllMarkers.bygroup(seu, split.by = "Sample",
+                                                             min.diff.pct=0.1, min.freq=0.7, logfc.threshold = 2)
+  head(markers.MP.list[[i]][["high"]],n=10)
+}
+
+markers.MP.list.highGenes <- lapply(markers.MP.list,function(x) {
+  x[["high"]][["Gene"]]
+})
+
+
+markers.MP.list.highGenes.intersect <- list()
+for(i in seq_along(sigs)){
+  markers.MP.list.highGenes.intersect[[i]] <- intersect(markers.MP.list.highGenes[[i]],sigs[[i]])
+}
+names(markers.MP.list.highGenes.intersect) <- names(markers.MP.list.highGenes)
+markers.MP.list.highGenes.intersect
+
+write.xlsx(markers.MP.list.highGenes.intersect, "_aux/markers.MP.xlsx")
+```
+
+
+Quantify similarity between MP markers:
+```{r}
+library(scales)
+overlap_coef <- function(vec1, vec2) {
+  intersection <- length(intersect(vec1, vec2))
+  #min_size <- min(c(length(vec1), length(vec2)))
+  min_size <- length(vec1)
+  return(intersection / min_size)
+}
+
+
+num_vectors <- length(markers.MP.list.highGenes.intersect)
+similarity_matrix <- matrix(NA, nrow = num_vectors, ncol = num_vectors)
+max_overlap_coef <- rep(0,length(markers.MP.list.highGenes.intersect))
+
+# Compute similarity between all pairs of vectors
+for (i in 1:num_vectors) {
+  for (j in 1:num_vectors) {
+    if (i != j) {
+      similarity_matrix[i, j] <- overlap_coef(markers.MP.list.highGenes.intersect[[i]],
+                                              markers.MP.list.highGenes.intersect[[j]])
+      if (similarity_matrix[i, j] > max_overlap_coef[i]) { max_overlap_coef[i] <- similarity_matrix[i, j]}  
+    } else {
+      similarity_matrix[i, j] <- 1  
+    }
+  }
+}
+rownames(similarity_matrix) <- names(markers.MP.list.highGenes.intersect)
+colnames(similarity_matrix) <- names(markers.MP.list.highGenes.intersect)
+
+similarity_matrix <- 100* similarity_matrix
+
+print(similarity_matrix)
+
+palette <- gradient_n_pal(RColorBrewer::brewer.pal(9, "Blues"))(seq(0, 1, length.out = 30))
+
+p <- pheatmap::pheatmap(similarity_matrix, col = palette, scale = "none",
+                        angle_col = 45, treeheight_row = 10, treeheight_col = 10)
+p 
+
+ggsave("plots/heatmap_geneOverlapCoeff_MP_markers.pdf", plot = p, width=5, height = 4)
+```
+
+
+
+
+We observe that in terms of MP marker genes overlap, MP7 and MP3 are highly similar.
+
+```{r}
+flattened <- unlist(markers.MP.list.highGenes.intersect)
+duplicated.genes <- flattened[duplicated(flattened)]
+duplicated.genes
+
+markers.MP.list.highGenes.intersect.specific <- lapply(markers.MP.list.highGenes.intersect,
+                                                       function(x) x[!x %in% duplicated.genes])
+
+write.xlsx(markers.MP.list.highGenes.intersect.specific, "_aux/markers.MP.specific.xlsx")
+```
+
+Pseudobulk the counts based on donor-condition-celltype
+```{r}
+pseudo_seu <- AggregateExpression(seu, assays = "RNA", return.seurat = T, group.by = c("MP7.WR_class", "Sample"))
+mat <- LayerData(pseudo_seu)[markers.MP.list.highGenes.intersect.specific$MP7.WR,]
+pheatmap::pheatmap(mat, col= heat.colors(8), scale = "row")
+```
+
+```{r, fig.height=5}
+pseudo_seu <- AggregateExpression(seu, assays = "RNA", return.seurat = T, group.by = c("MP3.ED_class", "Sample"))
+
+mat <- LayerData(pseudo_seu)[markers.MP.list.highGenes.intersect$MP3.ED,]
+pheatmap::pheatmap(mat, col= heat.colors(8), scale = "row")
+
+mat <- LayerData(pseudo_seu)[markers.MP.list.highGenes.intersect.specific$MP3.ED,]
+pheatmap::pheatmap(mat, col= heat.colors(8), scale = "row")
+```
+
+# Intepretation of filtered MPs based on Gavish et al pan-cancer gene meta programs
+
+Compare MPs to Gavish MPs
+
+```{r}
+geneUniverse <- rownames(seu)[seu@assays$RNA@meta.features$vst.variance>0.01] 
+#geneUniverse <- rownames(seu) 
+reference_signature_list <- read.csv("_aux/Tirosh_malignantAndEpithelial_meta_programs_2023-07-13.csv")
+reference_signature_list <- as.list(reference_signature_list)
+reference_signature_list <- lapply(reference_signature_list, function(x) x[x!=""])
+
+# unknown gene symbols?
+refGenes <- unique(unlist(reference_signature_list))
+unknownGenes <- refGenes[!refGenes %in% rownames(seu)]
+unknownGenes
+length(unknownGenes)/length(refGenes)*100 
+# 6% gene symbols not mapped/detected
+
+reference_signature_list <- lapply(reference_signature_list, function(x) x[!x %in% unknownGenes])
+
+query_signature_list <- markers.MP.list.highGenes.intersect
+
+pval.thr <- 0.01
+
+top_p <- lapply(query_signature_list, function(query_signature) {
+  fgRes <- fgsea::fora(pathways = reference_signature_list,
+                       genes = query_signature,
+                       universe = geneUniverse)
+  
+  fgRes <- fgRes[fgRes$padj <= pval.thr,]
+  
+  
+})
+
+for (metaprogram in names(query_signature_list)) {
+  
+  top_p[[metaprogram]] <- cbind(metaprogram, top_p[[metaprogram]])
+  print(head(top_p[[metaprogram]],20))
+  
+  top_p[[metaprogram]] <- mutate(top_p[[metaprogram]], qscore = -log(padj, base=10))
+  top_p[[metaprogram]] <- mutate(top_p[[metaprogram]], geneRatio = round(overlap/size,3))
+  top_p[[metaprogram]]$pathway <- factor(top_p[[metaprogram]]$pathway,levels=top_p[[metaprogram]]$pathway)
+}
+
+
+```
+
+
+```{r}
+enrich.list <- list()
+for (i in names(top_p)){
+  enrich.list[[i]] <- cbind(MP=i,top_p[[i]][,c("pathway","padj")])
+}
+
+enrich.df <- do.call(rbind, enrich.list)
+enrich.df <- as.data.frame(enrich.df)
+
+#remove NAs
+enrich.df <- enrich.df[!is.na(enrich.df$pathway),]
+
+enrich.df$minLogPadj <- -log(enrich.df$padj)
+enrich.df$minLogPadj[is.na(enrich.df$padj)] <- 0
+enrich.df$minLogPadj[enrich.df$minLogPadj > 10] <- 10
+#enrich.df <- enrich.df[!is.na(enrich.df$padj),]
+enrich.df
+# Heatmap 
+ggplot(enrich.df, aes(MP, pathway, fill= minLogPadj)) + geom_tile() +
+  scale_fill_gradient(low="white", high="blue", limits=c(0,10)) + theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+ggsave("plots/heatmap.Gavish_MP_enrichment_deg.pdf", width=4.8, height=5)
+```
+```{r}
+enrich.list <- list()
+for (i in names(top_p)){
+  enrich.list[[i]] <- cbind(MP=i,top_p[[i]][,c("pathway","overlap","size")])
+}
+
+enrich.df <- do.call(rbind, enrich.list)
+enrich.df <- as.data.frame(enrich.df)
+
+#remove NAs
+#enrich.df <- enrich.df[!is.na(enrich.df$pathway),]
+
+enrich.df$Overlap_pct <- round(enrich.df$overlap/enrich.df$size*100)
+enrich.df$Overlap_pct[is.na(enrich.df$Overlap_pct)] <- 0
+#enrich.df$minLogPadj[enrich.df$minLogPadj > 10] <- 10
+#enrich.df <- enrich.df[!is.na(enrich.df$padj),]
+enrich.df
+# Heatmap 
+ggplot(enrich.df, aes(MP, pathway, fill= Overlap_pct)) + geom_tile() +
+  scale_fill_gradient(low="white", high="blue", limits=c(0,80)) + theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+ggsave("plots/heatmap.Gavish_MP_enrichmentRefGeneOverlap_deg.pdf", width=4.5, height=5)
+
+#Horizontal?
+ggplot(enrich.df, aes(pathway, MP, fill= Overlap_pct)) + geom_tile() +
+  scale_fill_gradient(low="white", high="blue", limits=c(0,80)) + theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggsave("plots/heatmap.Gavish_MP_enrichmentRefGeneOverlap_flip_deg.pdf", width=8, height=3.5)
+
+```
+
+
+```{r}
+write.xlsx(top_p, "_aux/Enrichment_Gavish_MP.xlsx")
+```
+
+
+Compare MPs to annotated signatures in msigDB 
+```{r}
+geneUniverse <- rownames(seu)
+
+enrichmentSignatures <- markers.MP.list.highGenes.intersect
+
+top_p <- lapply(enrichmentSignatures, function(metaprogram) {
+   runGSEA(metaprogram, universe=geneUniverse, category = "C5", subcategory = "GO:BP")
+#  runGSEA(metaprogram, universe=geneUniverse, category = "C5", subcategory = "GO:MF")
+})
+```
+
+
+```{r}
+min.overlap <- 3
+for (metaprogram in names(enrichmentSignatures)) {
+  
+  tab <- top_p[[metaprogram]]
+  tab <- tab[tab$overlap >= min.overlap,]
+  tab <- cbind(metaprogram, tab)
+  
+  tab <- mutate(tab, qscore = -log(padj, base=10))
+  tab <- mutate(tab, geneRatio = round(overlap/size,3))
+  tab$pathway <- factor(tab$pathway,levels=tab$pathway)
+  #tab <- mutate(tab, path = substr(pathway,1,40))
+  top_p[[metaprogram]] <- tab
+  print(head(tab,15))
+}
+
+```
+
+```{r fig.width=10}
+enrichDotplot <- list()
+cols <- brewer.pal(9, 'Blues')[3:9]
+
+for (metaprogram in names(enrichmentSignatures)) {
+
+  maxsize <- max(top_p[[metaprogram]]$overlap)
+
+  enrichDotplot[[metaprogram]] <- ggplot(top_p[[metaprogram]][1:10,], aes(x = qscore, y = pathway,
+                                                                          color = geneRatio, size = overlap)) + 
+  geom_point(stat = 'identity') +
+    scale_colour_gradientn(colours = cols) + #lims(size = c(1,maxsize)) +
+#    scale_size(range=c(1,10), breaks = seq(1, maxsize, 3)) +
+  xlab("-log(adjusted p-value)") + ylab("path") + ggtitle(metaprogram) + 
+  theme_bw()
+}
+
+enrichDotplot
+
+wp <- wrap_plots(enrichDotplot,ncol = 2)
+ggsave("plots/enrichmentPlots_deg.pdf",wp, width = 21, height = 15)
+```
+
+
+
+Label MPs
+```{r}
+sigs <- markers.MP.list.highGenes.intersect
+names(sigs)[1] <- "MP1.CC"
+names(sigs)[2] <- "MP2"
+names(sigs)[3] <- "MP3.ED"
+names(sigs)[4] <- "MP4"
+names(sigs)[5] <- "MP5"
+names(sigs)[6] <- "MP6.STR"
+names(sigs)[7] <- "MP7.WR"
+sigs <- sigs[!is.na(names(sigs))]
+```
+
+```{r}
+sigs
+write.xlsx(sigs, "_aux/markers.MP.xlsx")
+```
+
+Remove previous MP scores and MP_class factors from Seurat object metadata
+```{r}
+col2rem <- grep("MP", colnames(seu[[]]))
+names(seu@meta.data)[col2rem]
+seu@meta.data <- seu@meta.data[,-col2rem]
+```
+
+Define cells and samples based on these signatures
+```{r}
+seu <- AddModuleScore_UCell(seu, features = sigs, assay="RNA", ncores=4, name = "")
+```
+
+Matrix of cell programs by cells
+```{r}
+matrix <- as.matrix(seu@meta.data[,names(sigs)])
+
+#keep centering and sd factors
+MPscale <- list()
+MPscale$center <- apply(matrix, 2, mean)
+MPscale$sd <- apply(matrix, 2, sd)
+
+matrix.scaled <- matrix
+for (r in 1:nrow(matrix)) {
+  matrix.scaled[r,] <- (matrix[r,] - MPscale$center) / MPscale$sd 
+}
+```
+
+
+```{r}
+corr_matrix <- cor(matrix)
+ggcorrplot(corr_matrix)
+
+ggsave("plots/MP_scores_correlation.pdf", height=3, width=4)
+```
+
+
+```{r}
+#save in Seurat object; also save scaling factors
+seu@misc$MP_signatures <- sigs
+seu@misc$MP_scale <- MPscale
+seu@misc$MP_signatures_specific <- markers.MP.list.highGenes.intersect.specific
+```
+
+
+Add signature scores as new reduction in Seurat object, and calculate UMAP within Seurat
+```{r}
+colnames(matrix.scaled) <- paste0("NMF_",seq(1, ncol(matrix.scaled)))
+#New dim reduction
+seu@reductions[["NMFsignatures"]] <- new("DimReduc",
+                                         cell.embeddings = matrix.scaled,
+                                         assay.used = "RNA",
+                                         key = "NMF_",
+                                         global = FALSE)
+```
+
+
+Reduce to 2D
+```{r fig.height=4, fig.width=20}
+set.seed(123)
+seu <- RunUMAP(seu, reduction="NMFsignatures", dims=1:length(seu@reductions[["NMFsignatures"]]),
+               metric = "euclidean", reduction.name = "umap_MP")
+
+FeaturePlot(seu, features = names(sigs)[1:8], reduction = "umap_MP", ncol=7,
+            pt.size = 4, raster = T) &
+  scale_color_viridis(option="B") &
+   theme(aspect.ratio = 1, axis.text=element_blank(), axis.ticks=element_blank(), axis.title = element_blank())
+
+ggsave("plots/MP_umap_by_program.pdf", height = 3, width = 18)
+#ggsave("plots/MP_umap_by_program.png", height = 6, width = 10)
+```
+
+
+By patient
+```{r}
+pat_palette <- brewer.pal(11, name="Paired")
+DimPlot(seu, group.by = "Sample", reduction = "umap_MP", cols=pat_palette, pt.size = 4, raster = T) +
+  theme(aspect.ratio = 1)
+
+ggsave("plots/MP_umap_by_patient.pdf", height = 4, width = 6)
+```
+
+
+```{r fig.height=4, fig.width=20}
+VlnPlot(seu, features = names(sigs), group.by = "Sample", pt.size = 0, ncol=7, cols=pat_palette)
+
+ggsave("plots/MP_violin_bt_patient.pdf", height = 3, width = 18)
+```
+
+
+Save object
+```{r}
+saveRDS(seu, file="_aux/BCC_seurat_NMFprograms.rds")
+```
+
+
