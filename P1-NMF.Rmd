@@ -1,6 +1,6 @@
 ---
 title: "Apply NMF on BCC samples"
-author: "Massimo Andreatta and Laura Yerly"
+author: "Massimo Andreatta"
 date: "`r format(Sys.Date(),'%e de %B, %Y')`"
 output: 
   rmdformats::downcute:
@@ -24,18 +24,16 @@ library(patchwork)
 library(tidyr)
 library(dplyr)
 library(RColorBrewer)
-
-#install.packages("GeneNMF")
-#remotes::install_github("carmonalab/GeneNMF", ref="dev")
 library(GeneNMF)
 ```
 
 
-## Set the paths
+## Read in datasets
+
+The discovery set for NMF analysis can be pre-processed using the scripts 1*.Rmd, 2*.Rmd and 3*.Rmd.
 
 ```{r}
-data.path <- '~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/rds/Tumor_combination_LY_CG.rds'
-#data.path <- "cache/Tumor_combination_LY_CG.rds"
+data.path <- "cache/Tumor_combination_LY_CG.rds"
 seu <- readRDS(data.path)
 ```
 

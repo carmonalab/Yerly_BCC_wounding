@@ -1,24 +1,21 @@
 ---
-title: "Characterization of cell populations (Ganier et al. set)"
-author: "Massimo Andreatta & Laura Yerly"
+title: "Characterization_cell_populations"
+author: "Laura Yerly and Massimo Andreatta"
 output: html_document
-date: "2024-02-07"
+date: "2024-03-26"
 ---
+
 
 ```{r setup, include=FALSE,fig.width=16,fig.height=12}
 renv::restore()
 library(ggplot2)
 library(Seurat)
-library(RColorBrewer)
-library(patchwork)
-library(ggrastr)
 ```
 
-# Read in pre-processed data
+# Set paths
 
-Read scRNA-seq data after QC from 2-Combination... script.
 ```{r}
-data.path <- "cache/bcc_8CG.rds"
+data.path <- "cache/Yost_BCC_all.rds"
 
 seu <- readRDS(data.path)
 ```
@@ -38,17 +35,13 @@ get_medians_signature<- function(object,signature){
   })
   medians
 }
-
-palette <- RColorBrewer::brewer.pal(10, name="Paired")
-names(palette) <- c("Cancer_cells","Normal_Kerat","Melanocyte","Endothelial",
-                                                  "Fibroblast","Mast","MoMacDC","Bcell","PlasmaCell","Tcell")  
 ```
 
 # Look at the data
 
 ```{r fig.width=12}
-a <- DimPlot(seu, reduction = "umap", group.by = "Sample") + theme(aspect.ratio = 1)
-b <- DimPlot(seu, group.by = "scGate_multi", label = T, repel = T, label.size = 2) +
+a <- DimPlot(seu, reduction = "umap", group.by = "Sample", raster=T) + theme(aspect.ratio = 1)
+b <- DimPlot(seu, group.by = "scGate_multi", label = T, repel = T, raster=T, label.size = 2) +
     theme(aspect.ratio = 1) + ggtitle("scGate annotation")
 a | b
 ```
@@ -57,7 +50,7 @@ Simplify annotations
 ```{r}
 seu$scGate_broad <- seu$scGate_multi
 
-seu$scGate_broad[seu$scGate_multi %in% c("Macrophage","Monocyte","panDC")] <- "MoMacDC"
+seu$scGate_broad[seu$scGate_multi %in% c("Macrophage","Monocyte")] <- "MoMac"
 seu$scGate_broad[seu$scGate_multi %in% c("CD4T","CD8T","NK")] <- "Tcell"
 ```
 
@@ -78,7 +71,7 @@ signatures$Pericytes<-c("RGS5","KCNE4","CPE")
 signatures$MastCells<-c("CTSG","TPSB2","TPSAB1")
 signatures$EndothelialCells<-c("PECAM1","HEY1","CCL14","ACKR1","SELE")
 
-seu<-AddModuleScore_UCell(seu,features = signatures, name = "", ncores=8)
+seu <- AddModuleScore_UCell(seu,features = signatures, name = "", ncores=8)
 ```
 
 View signatures
@@ -110,11 +103,10 @@ FeaturePlot(seu, features=c("LYZ","SPI1","CSF1R","CD68","APOE","FCN1","S100A9"))
         axis.text = element_blank(),
         axis.ticks = element_blank())
 
-FeaturePlot(seu, features=c("KRT1","KRT10","GATA3","KRTDAP","KRT5","KRT14")) & theme(aspect.ratio = 1,
+FeaturePlot(seu, features=c("KRT1","KRT10","SBSN","KRTDAP","KRT5","KRT14")) & theme(aspect.ratio = 1,
   axis.title = element_blank(),
         axis.text = element_blank(),
         axis.ticks = element_blank())
-
 ```
 
 
@@ -126,7 +118,7 @@ DimPlot(seu, reduction = "umap", group.by = "seurat_clusters", label=T) + theme(
 
 
 Clusters by majority vote
-```{r}
+```{r fig.width=10}
 tab <- table(seu$seurat_clusters, seu$scGate_broad, useNA = "ifany")
 tab_norm <- apply(tab, 1, function(x) {x/sum(x)})
 tab_norm
@@ -137,12 +129,15 @@ majority <- apply(tab_norm, 2, function(x){
 
 seu$annotation <- unname(majority[seu$seurat_clusters])
 
-DimPlot(seu, group.by = "annotation", label = T, repel = T, label.size = 2) +
+ann <- DimPlot(seu, group.by = "annotation", label = T, repel = T, raster=T, label.size = 2) +
     theme(aspect.ratio = 1)
+
+a | ann
+ggsave("plots/Yost_allcells_anno_umap.pdf", width=12, heigh=5)
 ```
 Focus on T cells and Keratinocytes
 ```{r}
-which.cells <- colnames(seu)[seu$annotation %in% c("Tcell","Epithelial") | is.na(seu$annotation)]
+which.cells <- colnames(seu)[seu$annotation %in% c("Epithelial") | is.na(seu$annotation)]
 sub <- subset(seu, cells=which.cells)
 ```
 
@@ -180,6 +175,7 @@ FeaturePlot(sub, features=names(signatures)) & theme(aspect.ratio = 1,
 BCC_means<-get_means_signature(sub,"BCC")
 NormKerat_means<-get_means_signature(sub,"NormKerat")
 TCells_means<-get_means_signature(sub,"TCells")
+BCells_means<-get_means_signature(sub,"BCells")
 Myeloid_means <- get_means_signature(sub,"MyeloidCells")
 ```
 
@@ -190,147 +186,43 @@ Any doublets?
 plot(x=BCC_means, y=NormKerat_means)
 plot(x=BCC_means, y=TCells_means)
 plot(x=NormKerat_means, y=TCells_means)
-plot(x=NormKerat_means, y=Myeloid_means)
+plot(x=NormKerat_means, y=BCells_means)
 ```
 
 ```{r}
 tcell_pass <- names(TCells_means)[TCells_means>0.15]
-bcc_pass <- names(BCC_means)[BCC_means>0.15]
+bcc_pass <- names(BCC_means)[BCC_means>0.05]
 ker_pass <- names(NormKerat_means)[NormKerat_means>0.20]
-myeloid_pass <- names(Myeloid_means)[Myeloid_means>0.15]
+bcell_pass <- names(BCells_means)[BCells_means>0.2]
 
 doublets <- unique(c(intersect(tcell_pass, ker_pass),
                      intersect(tcell_pass, bcc_pass),
-                     intersect(myeloid_pass, bcc_pass),
-                     intersect(myeloid_pass, ker_pass)))
+                     intersect(bcell_pass, ker_pass)))
 
+sub$annotation[sub$seurat_clusters %in% bcell_pass] <- "Bcell"
 sub$annotation[sub$seurat_clusters %in% ker_pass] <- "Normal_Kerat"
 sub$annotation[sub$seurat_clusters %in% bcc_pass] <- "Cancer_cells"
 sub$annotation[sub$seurat_clusters %in% doublets] <- "Doublets"
 ```
 
-```{r}
-a <- DimPlot(sub, reduction = "umap", group.by = "Sample") + theme(aspect.ratio = 1)
-a <- rasterize(a, layers='Point', dpi=300)
-
+```{r fig.width=12}
 ann <- DimPlot(sub, group.by = "annotation", label = T, repel = T, label.size = 2) +
     theme(aspect.ratio = 1)
-ann <- rasterize(ann, layers='Point', dpi=300)
+b <- DimPlot(sub, reduction = "umap", group.by = "Sample") + theme(aspect.ratio = 1)
 
-(a | ann) & theme(axis.title=element_blank(),
-        axis.text=element_blank(),
-        axis.ticks=element_blank())
-
-ggsave("plots/CG_kerat_anno_umap.pdf", width=12, heigh=5)
+b | ann
+ggsave("plots/Yost_keratTcells_anno_umap.pdf", width=12, heigh=5)
 ```
+
 
 ```{r}
 table(sub$Sample, sub$annotation, useNA = "ifany")
 ```
 
-```{r}
-labels.sub <- sub$annotation
-
-seu$annotation[names(labels.sub)] <- unname(labels.sub)
-
-notna <- colnames(seu)[!is.na(seu$annotation)]
-seu <- subset(seu, cells = notna)
-
-table(seu$Sample, seu$annotation, useNA = "ifany")
-```
-
-# Rename patient by BCCX
-
-```{r fig.width=12}
-new.ids <-  paste0("BCC", seq(from=8, to=15))
-names(new.ids) <- unique(seu$Sample)
-
-seu$patient_bcc <- unname(new.ids[seu$Sample])
-
-Idents(seu) <- "Sample"
-```
-
-Plot UMAPs (downsample for visuals only)
-```{r fig.width=12, fig.height=5}
-toplot <- seu
-Idents(toplot) <- "annotation"
-toplot <- subset(toplot, downsample = 20000)
-
-a <- DimPlot(toplot, reduction = "umap", group.by = "Sample") + theme(aspect.ratio = 1)
-a <- rasterize(a, layers='Point', dpi=300)
-
-ann <- DimPlot(toplot, group.by = "annotation", label = T, repel = T, raster=F,
-               label.size = 3, cols=palette) +
-    theme(aspect.ratio = 1)
-ann <- rasterize(ann, layers='Point', dpi=300)
-
-(a | ann) & theme(axis.title=element_blank(),
-        axis.text=element_blank(),
-        axis.ticks=element_blank())
-
-ggsave("plots/CG_all_anno_umap.pdf", width=12, heigh=5)
-```
-
-```{r}
-seu$annotation <- factor(seu$annotation, levels=c("Cancer_cells","Normal_Kerat","Melanocyte","Endothelial",
-                                                  "Fibroblast","Mast","MoMacDC","Bcell","PlasmaCell","Tcell"))
-genes <- c("PTCH1","GLI1","GLI2","SPON2","KRT14","KRT5","PMEL","PECAM1","COL1A1","CPA3",
-           "SPI1","CD79A","JCHAIN","CD2")
-
-DotPlot(seu, features=genes, group.by = "annotation", cols="RdBu", scale=T, col.max=2) +
-  theme(axis.text.x = element_text(angle = 45, hjust=1))
-ggsave("plots/CG_dotplot.pdf", height=4, width=7)
-```
-
-```{r}
-Idents(seu) <- "annotation"
-VlnPlot(seu,features=names(signatures),
-        group.by = "annotation", cols=palette, fill.by = "ident", stack = T) + NoLegend()
-ggsave("plots/CG_signature_violin.pdf", width=7, height=4)
-```
-
-
 Evaluate sample mixing - is it lower among cancer cells?
-```{r}
+```{r eval=F}
+#remotes::install_github("carmonalab/scIntegrationMetrics")
 library(scIntegrationMetrics)
-
-meta <- seu@meta.data[, c("annotation", "Sample")]
-
-tab <- table(meta$annotation, useNA = "ifany")
-pass <- names(tab)[tab>100] 
-
-notNA.cells <- rownames(meta)[!is.na(meta[, "annotation"]) & meta[,"annotation"] %in% pass]
-
-object <- subset(seu, cells = notNA.cells)
-meta <- meta[notNA.cells, ]
-
-emb <- Embeddings(object, reduction = "pca")
-
-#iLISI
-iLISI <- compute_lisi(X = emb, meta_data = object@meta.data, 
-            label_colnames = "Sample")[[1]]
-
-meta$iLISI <- iLISI
-
-#sort by increasing average iLISI
-agg <- aggregate(meta$iLISI, list(meta$annotation), FUN=mean) 
-agg.v <- agg$x
-names(agg.v) <- agg$Group.1
-agg.sorted <- sort(agg.v, decreasing = F)
-
-meta$annotation <- factor(meta$annotation, levels=names(agg.sorted))
-
-ggplot(meta, aes(x=annotation, y=iLISI)) + 
-  geom_boxplot(outlier.size=0.1) + theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, vjust =1, hjust=1))
-
-ggsave("plots/CG_iLISI_per_celltype.pdf", height=3.5, width=5)
-```
-
-On subset only
-```{r}
-library(scIntegrationMetrics)
-
 meta <- sub@meta.data[, c("annotation", "Sample")]
 
 tab <- table(meta$annotation, useNA = "ifany")
@@ -349,25 +241,64 @@ iLISI <- compute_lisi(X = emb, meta_data = object@meta.data,
 
 meta$iLISI <- iLISI
 
-#sort by increasing average iLISI
-agg <- aggregate(meta$iLISI, list(meta$annotation), FUN=mean) 
-agg.v <- agg$x
-names(agg.v) <- agg$Group.1
-agg.sorted <- sort(agg.v, decreasing = F)
+ggplot(meta, aes(x=annotation, y=iLISI)) + 
+  geom_boxplot(outlier.size=0.1) + theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust =1, hjust=1))
 
-meta$annotation <- factor(meta$annotation, levels=names(agg.sorted))
+ggsave("plots/Yost_iLISI_per_celltype_kerat.pdf", height=4, width=4)
+```
+
+
+```{r}
+labels.sub <- sub$annotation
+
+seu$annotation[names(labels.sub)] <- unname(labels.sub)
+
+table(seu$Sample, seu$annotation, useNA = "ifany")
+```
+
+```{r fig.width=12}
+a <- DimPlot(seu, reduction = "umap", raster=T, group.by = "Sample") + theme(aspect.ratio = 1)
+b <- DimPlot(seu, group.by = "annotation", label = T, raster=T, repel = T, label.size = 2) +
+    theme(aspect.ratio = 1) + ggtitle("Cell type")
+a | b
+
+ggsave("plots/Yost_allcells_anno_umap.pdf", width=12, heigh=5)
+```
+
+Evaluate sample mixing - is it lower among cancer cells?
+```{r eval=F}
+library(scIntegrationMetrics)
+meta <- seu@meta.data[, c("annotation", "Sample")]
+
+tab <- table(meta$annotation, useNA = "ifany")
+pass <- names(tab)[tab>100] 
+
+notNA.cells <- rownames(meta)[!is.na(meta[, "annotation"]) & meta[,"annotation"] %in% pass]
+
+object <- subset(seu, cells = notNA.cells)
+meta <- meta[notNA.cells, ]
+
+emb <- Embeddings(object, reduction = "pca")
+
+#iLISI
+iLISI <- compute_lisi(X = emb, meta_data = object@meta.data, 
+            label_colnames = "Sample")[[1]]
+
+meta$iLISI <- iLISI
 
 ggplot(meta, aes(x=annotation, y=iLISI)) + 
   geom_boxplot(outlier.size=0.1) + theme_bw() +
   theme(axis.text.x = element_text(angle = 45, vjust =1, hjust=1))
 
-ggsave("plots/CG_iLISI_per_celltype_sub.pdf", height=3.5, width=4)
+ggsave("plots/Yost_iLISI_per_celltype_all.pdf", height=4, width=4)
 ```
 
-# Save
 
+
+# Save
 ```{r} 
-file <- "cache/BCC_CG_all_annotated.rds"
+file <- "cache/BCC_Yost_all_annotated.rds"
 saveRDS(seu, file)
 ```
 
@@ -375,6 +306,7 @@ Save cancer cells to file
 ```{r}
 tumor <- subset(seu, subset=annotation == "Cancer_cells")
 
-file_cancer <- "cache/Tumor_CG.rds"
+file_cancer <- "cache/Tumor_Yost.rds"
+
 saveRDS(tumor, file_cancer)
 ```

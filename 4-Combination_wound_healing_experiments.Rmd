@@ -1,6 +1,6 @@
 ---
-title: "Combination_wound_healing_experiments"
-author: "Laura Yerly"
+title: "Combination of data from wounding experiments"
+author: "Massimo Andreatta & Laura Yerly"
 output: html_document
 date: "2024-02-28"
 ---
@@ -12,6 +12,8 @@ library(patchwork)
 library(Seurat)
 library(Matrix)
 ```
+
+The data can be downloaded from GEO (GSE266665): https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE266665
 
 Read count matrices
 ```{r}

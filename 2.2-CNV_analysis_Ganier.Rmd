@@ -1,6 +1,6 @@
 ---
 title: "CNV_analysis"
-author: "Laura Yerly"
+author: "Massimo Andreatta & Laura Yerly"
 output: html_document
 date: "2024-02-06"
 ---
@@ -11,7 +11,9 @@ library(Seurat)
 library(infercnv)
 ```
 
-# Set path
+# Read in annotated data
+
+Read scRNA-seq data after annotation from 121-Characterization... script.
 
 ```{r}
 file_clean <- "cache/BCC_CG_all_annotated.rds"

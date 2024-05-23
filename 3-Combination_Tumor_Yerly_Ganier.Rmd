@@ -1,6 +1,6 @@
 ---
-title: "Combination_Tumor_Yerly_Ganier"
-author: "Laura Yerly"
+title: "Combination tumor cells from Yerly + Ganier"
+author: "Massimo Andreatta & Laura Yerly"
 output: html_document
 date: "2024-02-28"
 ---
@@ -13,6 +13,7 @@ library(ggplot2)
 
 # Set paths 
 
+These .rds objects were prepared using the 1.* and 2.* scripts.
 ```{r}
 Tumor_LY <- readRDS("cache/Tumor_LY.rds")
 Tumor_CG <- readRDS("cache/Tumor_CG.rds")
@@ -162,11 +163,6 @@ tab <- table(Tumor.combined$Sample)
 as.data.frame(tab)
 
 file <- "cache/Tumor_combination_LY_CG.rds"
-saveRDS(Tumor.combined, file)
-
-#save also copy to Dropbox
-file <- "~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/rds/Tumor_combination_LY_CG.rds"
-
 saveRDS(Tumor.combined, file)
 
 ```

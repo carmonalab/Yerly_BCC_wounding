@@ -1,6 +1,6 @@
 ---
-title: "Characterization_cell_populations"
-author: "Laura Yerly"
+title: "Characterization of cell populations in wounding experiments"
+author: "Massimo Andreatta & Laura Yerly"
 output: html_document
 date: "2024-02-07"
 ---
@@ -283,7 +283,7 @@ saveRDS(seu, file)
 Save cancer cells to file
 ```{r}
 tumor <- subset(seu, subset=annotation == "Cancer_cells")
-file_cancer <- '~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/rds/Tumor_WH.rds'
+file_cancer <- 'cache/Tumor_WH.rds'
 
 saveRDS(tumor, file_cancer)
 ```

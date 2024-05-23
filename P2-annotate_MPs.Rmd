@@ -1,6 +1,6 @@
 ---
-title: "Apply NMF on BCC samples"
-author: "Massimo Andreatta and Laura Yerly"
+title: "Annotated NMF meta-programs"
+author: "Massimo Andreatta"
 date: "`r format(Sys.Date(),'%e de %B, %Y')`"
 output: 
   rmdformats::downcute:
@@ -36,8 +36,7 @@ library(corrr)
 
 Read in source data
 ```{r}
-data.path <- '~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/rds/Tumor_combination_LY_CG.rds'
-#data.path <- "cache/Tumor_combination_LY_CG.rds"
+data.path <- "cache/Tumor_combination_LY_CG.rds"
 seu <- readRDS(data.path)
 ```
 
@@ -191,12 +190,6 @@ enrichDotplot
 
 wp <- wrap_plots(enrichDotplot,ncol = 2)
 ggsave("plots/enrichmentPlots.pdf",wp, width = 18, height = 15)
-```
-
-
-```{r}
-write.xlsx(top_p, "_aux/GSEA_MP.xlsx")
-#write.xlsx(top_p, "aux/GSEA_MP_WIKIPATHWAYS.xlsx")
 ```
 
 

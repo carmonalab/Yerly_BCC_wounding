@@ -1,75 +1,56 @@
 ---
-title: "Combination of samples from Ganier et al."
+title: "Analysis of Yost dataset"
 author: "Massimo Andreatta & Laura Yerly"
 output: html_document
-date: "2024-02-06"
+date: "2024-03-11"
 ---
-
-Data are from Ganier et al. (https://www.pnas.org/doi/full/10.1073/pnas.2313326120#data-availability), ArrayExpres: https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-13085
-
-The study contains samples from multiple sites, including 8 samples from BCC:
-WS_SKN_KCL9369630, WS_SKN_KCL9369632, WS_SKN_KCL10525740, WS_SKN_KCL10525742, WS_SKN_KCL10525743, WS_SKN_KCL10525745, WS_SKN_KCL10525746, WS_SKN_KCL10525747
 
 ```{r setup, include=FALSE,fig.width=16,fig.height=12}
 renv::restore()
-library(ggplot2)
-library(patchwork)
 library(Seurat)
-library(Matrix)
+library(ggplot2)
 ```
 
-Read count matrices
+# Read in count matrices and metadata
+
+Download from GEO (GSE123813):  https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE123813 
 ```{r}
-#Replace with download directory 
-data_dir <- "~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/raw/CellRanger_Ganier"
+fname <- "./Yost_data/GSE123813_bcc_scRNA_counts.txt"
 
-all_samples <- list.files(path=data_dir, pattern = "^WS_", full.names = T)
-sample_ids <- gsub(pattern="\\S+(\\d{3}$)", replacement = "\\1", x=all_samples)
-sample_ids <- paste0("CL", sample_ids)
+Yost_counts <-  read.table(fname, header = TRUE, dec =".",sep = "\t",as.is = TRUE)
 ```
 
-Standardize gene symbols while loading
+Import metadata 
+```{r}
+fname <- "./Yost_data/GSE123813_bcc_all_metadata.txt"
+
+Metadata <- read.table(fname,sep = "\t", header = TRUE, dec =".")
+
+rownames(Metadata) <- Metadata$cell.id
+```
+
+# Create a seurat object 
 ```{r}
 library(STACAS)
-# load gene symbols dataset
 data(EnsemblGeneTable.Hs)
 
 options("Seurat.object.assay.version" = "v3")
+Yost_BCC <- CreateSeuratObject(counts = Yost_counts, project = "BCC_Yost",
+                               min.cells = 3, min.features = 50)
 
-seu.list <- lapply(seq_along(all_samples), function(i) {
-  
-  mtx <- paste0(all_samples[i], "/filtered_feature_bc_matrix")
-  
-  mat <- Read10X(mtx)
-  a <- CreateSeuratObject(mat, min.features = 50, min.cells = 0)
-  a <- StandardizeGeneSymbols(a, slots = "counts", EnsemblGeneTable = EnsemblGeneTable.Hs)
-  
-  a$Sample <- sample_ids[i]
-  NormalizeData(a)
-})
+Yost_BCC <- StandardizeGeneSymbols(Yost_BCC, slots = "counts", EnsemblGeneTable = EnsemblGeneTable.Hs)
 ```
 
-#Merge into single object
+# Add metadata
 ```{r}
-data_seurat <- Reduce(f=merge, x=seu.list)
-#data_seurat <- JoinLayers(data_seurat)
+Yost_BCC <- AddMetaData(Yost_BCC, metadata = Metadata)
+
+table(Yost_BCC$patient, Yost_BCC$treatment)
+Yost_BCC$Sample <- paste(Yost_BCC$patient, Yost_BCC$treatment, sep = "_")
 ```
 
-## Dissociation-related genes
-Dissociation-related genes: Genes associated with the dissociation
-protocol, i.e. stress genes, can sometimes cause clustering of cells in
-different groups. Described by van den brink et al 2017
-<https://www.nature.com/articles/nmeth.4437#accession-codes> Another
-paper (Fan et al 2019) used the genes in Van Den Brink et al. (2017) and
-posted the Rmd with the code to remove genes on github:
-<https://www.nature.com/articles/s41467-019-11036-9#code-availability>
-removed cells that expressed high dissociation-related genes. Eg in
-Rachel's analysis of Jeremiah's data, she saw that a 10% dissoc-related
-gene cut off was removing many cells, one cluster was very high for
-those genes, but even regressing-out the genes would not remove fully
-this cluster that they couldn't really annotate, so they removed it.
-Gene list is from Van Den Brink et al. (2017) R code in supplementary
-method under "In silico purification"
+# QC
+Dissociation-related genes
 ```{r}
 dissoc_genes <- c("Actg1__chr11","Ankrd1__chr19","Arid5a__chr1","Atf3__chr1","Atf4__chr15","Bag3__chr7","Bhlhe40__chr6",
                   "Brd2__chr17","Btg1__chr10","Btg2__chr1","Ccnl1__chr3","Ccrn4l__chr3","Cebpb__chr2","Cebpd__chr16",
@@ -105,16 +86,15 @@ library(SignatuR)
 ribo.genes <- GetSignature(SignatuR$Hs$Compartments$Ribo)
 mito.genes <- GetSignature(SignatuR$Hs$Compartments$Mito)
 
-
 # Compute ribosomal and mitochondrial content and add to Seurat object metadata
-data_seurat <- AddMetaData(data_seurat, metadata = PercentageFeatureSet(data_seurat, features = ribo.genes[ribo.genes %in% rownames(data_seurat)]), col.name = "percent.ribo")
+Yost_BCC <- AddMetaData(Yost_BCC, metadata = PercentageFeatureSet(Yost_BCC, features = ribo.genes[ribo.genes %in% rownames(Yost_BCC)]), col.name = "percent.ribo")
 
-data_seurat <- AddMetaData(data_seurat, metadata = PercentageFeatureSet(data_seurat, features = mito.genes[mito.genes %in% rownames(data_seurat)]), col.name = "percent.mito")
+Yost_BCC <- AddMetaData(Yost_BCC, metadata = PercentageFeatureSet(Yost_BCC, features = mito.genes[mito.genes %in% rownames(Yost_BCC)]), col.name = "percent.mito")
 
-data_seurat <- AddMetaData(data_seurat, metadata = PercentageFeatureSet(data_seurat, features = dissoc_genes[dissoc_genes %in% rownames(data_seurat)]), col.name = "percent.dissoc")
+Yost_BCC <- AddMetaData(Yost_BCC, metadata = PercentageFeatureSet(Yost_BCC, features = dissoc_genes[dissoc_genes %in% rownames(Yost_BCC)]), col.name = "percent.dissoc")
 
 # Compute the ratio of number of genes/features and number of counts/UMIs
-data_seurat$log10GenesPerUmi <- log10(data_seurat$nFeature_RNA) / log10(data_seurat$nCount_RNA)
+Yost_BCC$log10GenesPerUmi <- log10(Yost_BCC$nFeature_RNA) / log10(Yost_BCC$nCount_RNA)
 
 ```
 
@@ -122,8 +102,8 @@ data_seurat$log10GenesPerUmi <- log10(data_seurat$nFeature_RNA) / log10(data_seu
 
 
 ```{r qc_plots0, fig.height= 10}
-Idents(data_seurat) <- "Sample"
-VlnPlot(data_seurat,
+Idents(Yost_BCC) <- "Sample"
+VlnPlot(Yost_BCC,
         features = c("nFeature_RNA", "nCount_RNA",
                      "percent.ribo","percent.mito",
                      "percent.dissoc","log10GenesPerUmi"),
@@ -136,11 +116,11 @@ VlnPlot(data_seurat,
 ```{r set_cutoffs}
 cutoffs <- list()
 cutoffs[["percent.ribo"]] <- c(min=0,max=60)
-cutoffs[["percent.mito"]] <- c(min=0,max=20)
-cutoffs[["nFeature_RNA"]] <- c(min=500,max=6000) 
-cutoffs[["nCount_RNA"]] <- c(min=600,max=25000)
-cutoffs[["percent.dissoc"]] <- c(min=0, max=20)
-cutoffs[["log10GenesPerUmi"]] <- 0.8
+cutoffs[["percent.mito"]] <- c(min=0,max=15)
+cutoffs[["nFeature_RNA"]] <- c(min=500,max=5000) 
+cutoffs[["nCount_RNA"]] <- c(min=800,max=30000)
+cutoffs[["percent.dissoc"]] <- c(min=0, max=15)
+cutoffs[["log10GenesPerUmi"]] <- 0.7
 print(cutoffs)
 ```
 
@@ -149,8 +129,8 @@ print(cutoffs)
 ```{r probs}
 for(va in names(cutoffs)){
   cat(va, "\n")
-  print(quantile(data_seurat@meta.data[[va]],
-                 probs=c(0.001, 0.005, 0.01, 0.02, 0.1, 0.50, 0.9,
+  print(quantile(Yost_BCC@meta.data[[va]],
+                 probs=c(0.001, 0.005, 0.01, 0.02,
                          0.98, 0.99, 0.995, 0.999))
         )
 }
@@ -160,11 +140,11 @@ for(va in names(cutoffs)){
 
 ```{r subset_seurat fig.height= 10}
 # store initial number of cells
-initialCellNum <- ncol(data_seurat)
+initialCellNum <- ncol(Yost_BCC)
 message(paste("Original number of cells:", initialCellNum))
 
 # Perform subsetting using cutoffs list and qc metrics considered
-data_seurat <- subset(data_seurat, subset = 
+Yost_BCC <- subset(Yost_BCC, subset = 
                         nFeature_RNA >= cutoffs[["nFeature_RNA"]]["min"] &
                         nFeature_RNA < cutoffs[["nFeature_RNA"]]["max"] & 
                         nCount_RNA   >= cutoffs[["nCount_RNA"]]["min"]   & 
@@ -179,65 +159,58 @@ data_seurat <- subset(data_seurat, subset =
                       )
 
 # Print and evaluate the cell drop out after filtering
-l <- ncol(data_seurat)
+l <- ncol(Yost_BCC)
 message(sprintf("Number of cells after QC: %i (%.2f %% of input)", l, 100*l/initialCellNum))
 ```
 
 
-## Data scaling and dimensionality reduction
 
 ```{r}
-bcc_8CG <- data_seurat
-bcc_8CG <- NormalizeData(bcc_8CG) |> FindVariableFeatures(nfeatures=2000) |>
-  ScaleData()
+set.seed(123)
+Yost_BCC <- NormalizeData(Yost_BCC) |> FindVariableFeatures(nfeatures = 2000, verbose = FALSE)
+Yost_BCC <- ScaleData(Yost_BCC) |> RunPCA(npcs = 30) |>
+  RunUMAP(reduction = "pca", dims = 1:30)
 
-bcc_8CG <- bcc_8CG |> RunPCA(npcs=30) |> RunUMAP(reduction = "pca", dims = 1:30)
-
-a <- DimPlot(bcc_8CG, reduction = "umap", group.by = "Sample") + theme(aspect.ratio = 1)
-a
+Yost_BCC <- FindNeighbors(Yost_BCC, dims = 1:30) |> FindClusters(resolution=2)
 ```
 
-## Clustering
-
-```{r}
-bcc_8CG <- FindNeighbors(object = bcc_8CG, dims=1:30)
-bcc_8CG <- FindClusters(object = bcc_8CG, resolution = 1)
-DimPlot(bcc_8CG, reduction = "umap", group.by = "seurat_clusters") + theme(aspect.ratio = 1)
+```{r fig.height=8, fig.width=12}
+a <- DimPlot(Yost_BCC, group.by = "patient") + theme(aspect.ratio = 1)
+b <- DimPlot(Yost_BCC, group.by = "Sample") + theme(aspect.ratio = 1)
+a | b
 ```
 
 ##Broad classification using scGate
 
-```{r eval=T}
+```{r}
 library(scGate)
 
-models.DB <- scGate::get_scGateDB(destination = ".", version = "v0.16")
+models.DB <- scGate::get_scGateDB()
 models.list <- models.DB$human$TME_HiRes
 
 models.list$Melanocyte <- gating_model(name = "Melanocyte", signature = c("PMEL","MLANA","LYZ-"))
 
-bcc_8CG <- scGate(bcc_8CG, model = models.list, ncores = 8, multi.asNA = T)
+Yost_BCC <- scGate(Yost_BCC, model = models.list, ncores = 8, multi.asNA = T)
 ```
 
 ```{r}
-b <- DimPlot(bcc_8CG, group.by = "scGate_multi", label = T, repel = T, label.size = 2) +
+ann <- DimPlot(Yost_BCC, group.by = "scGate_multi", label = T, repel = T, label.size = 2) +
     theme(aspect.ratio = 1) + ggtitle("scGate annotation")
-b
+ann
 ```
 
 ```{r fig.width=12}
-a | b
+a | ann
 ```
 
 
 ```{r}
-table(bcc_8CG$scGate_multi, useNA = "ifany")
-table(bcc_8CG$scGate_multi, bcc_8CG$Sample, useNA = "ifany")
+table(Yost_BCC$Sample, Yost_BCC$scGate_multi, useNA = "ifany")
 ```
 
-
-## Save 
+# Save 
 ```{r}
-file <- "cache/bcc_8CG.rds"
+file <- "cache/Yost_BCC_all.rds"
 
-saveRDS(bcc_8CG, file)
+saveRDS(object = Yost_BCC, file=file)
 ```

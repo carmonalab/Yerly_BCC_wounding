@@ -1,6 +1,6 @@
 ---
-title: "Combination_all_Yerly_BCCs"
-Author: "Laura Yerly"
+title: "Combination of dataset by Yerly et al."
+Author: "Massimo Andreatta & Laura Yerly"
 output: html_document
 date: "2024-02-06"
 editor_options: 
@@ -17,12 +17,14 @@ library(patchwork)
 set.seed(123)
 ```
 
+Filtered count matrices can be downloaded from GEO (GSE181907): https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE181907
+
 ## Import count matrices and gene names
 
 ```{r}
-#matrix_dir = "M:/DER/LABOS/ONCODER/Laura/1-Experiments/4-Bioinformatic/2-Human BCC scRNAseq (Yao_Yost_Yerly)/10-BCC7LY_GTF_CellRanger/LY021121/filtered_feature_bc_matrix/"
-
-matrix_dir = "~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/raw/CellRanger_LY/LY021121_filtered_feature_bc_matrix/"
+#Replace directory after dowload
+ddir <- "~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/raw/CellRanger_LY/"
+matrix_dir = paste0(ddir, "LY021121_filtered_feature_bc_matrix/")
 
 features.path <- paste0(matrix_dir, "features.tsv.gz")
 feature.names <- read.delim(features.path, 
@@ -42,12 +44,9 @@ feature.names$unique_symbol<-make.names(feature.names$symbol, unique = T)
 
 ## Function to read a library, add barcodes as column names with sample
 
-name, add gene names as rownames
-
 ```{r}
 read_mtx <- function(matrix_dir, samplename) {
-  # matrix_dir is the full path to where the cell ranger output files are stored
-  # samplename is a character to add to the cell names to track each cell from which sample it comes from.
+  
   barcode.path <- paste0(matrix_dir, "barcodes.tsv.gz")
   features.path <- paste0(matrix_dir, "features.tsv.gz")
   matrix.path <- paste0(matrix_dir, "matrix.mtx.gz")
@@ -79,10 +78,7 @@ read_mtx <- function(matrix_dir, samplename) {
 ```
 
 ## Import the individual data matrices
-
 ```{r}
-ddir <- "~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/raw/CellRanger_LY/"
-
 files <- list.files(ddir, full.names = T)
 files <- paste0(files, "/")
 

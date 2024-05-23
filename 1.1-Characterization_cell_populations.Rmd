@@ -1,6 +1,6 @@
 ---
-title: "Characterization_cell_populations"
-author: "Laura Yerly"
+title: "Characterization of cell populations"
+author: "Massimo Andreatta & Laura Yerly"
 output: html_document
 date: "2024-02-06"
 ---
@@ -15,10 +15,10 @@ library(RColorBrewer)
 library(patchwork)
 ```
 
-# Set paths
+# Read in pre-processed data
 
+Read scRNA-seq data after QC from 1-Combination... script.
 ```{r}
-#data.path<-"M:/DER/LABOS/ONCODER/Laura/1-Experiments/4-Bioinformatic/Code_reproducibility/bcc_7LY.rds"
 data.path <- "cache/bcc_7LY.rds"
 
 seu <- readRDS(data.path)

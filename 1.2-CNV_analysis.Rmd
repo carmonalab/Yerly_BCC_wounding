@@ -1,6 +1,6 @@
 ---
 title: "CNV_analysis"
-author: "Laura Yerly"
+author: "Massimo Andreatta & Laura Yerly"
 output: html_document
 date: "2024-02-06"
 ---
@@ -11,10 +11,10 @@ library(Seurat)
 library(infercnv)   #"Version": "1.18.1"
 ```
 
-# Set path
+# Read in annotated data
 
+Read scRNA-seq data after annotation from 1.1-Characterization... script.
 ```{r}
-#file_clean <- "M:/DER/LABOS/ONCODER/Laura/1-Experiments/4-Bioinformatic/Code_reproducibility/BCC_all_LY_clean_annotated.rds"
 file_clean <- "cache/BCC_all_LY_clean_annotated.rds"
 seu <- readRDS(file_clean)
 ```

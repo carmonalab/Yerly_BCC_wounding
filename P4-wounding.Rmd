@@ -1,6 +1,6 @@
 ---
 title: "Study effect of surgery on BCC samples"
-author: "Massimo Andreatta"
+author: "Massimo Andreatta and Laura Yerly"
 date: "`r format(Sys.Date(),'%e de %B, %Y')`"
 output: 
   rmdformats::downcute:
@@ -38,8 +38,7 @@ options("Seurat.object.assay.version" = "v3")
 Two patients at three timepoints: Baseline (first biopsy), 1 week after surgery on same wound, 1 week after surgery at different location
 
 ```{r}
-#file_cancer <- "cache/Tumor_WH.rds"
-file_cancer <- '~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/rds/Tumor_WH.rds'
+file_cancer <- "cache/Tumor_WH.rds"
 
 seu.merged <- readRDS(file_cancer)
 ```
