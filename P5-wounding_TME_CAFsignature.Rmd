@@ -1,0 +1,581 @@
+---
+title: "Study the effect of surgery on BCC tumor microenvironment"
+author: "Josep Garnica"
+date: "`r format(Sys.Date(),'%e de %B, %Y')`"
+output: 
+  rmdformats::downcute:
+    lightbox: true
+    thumbnails: false
+    self_contained: true
+    gallery: true
+    code_folding: show
+  pkgdown:
+    as_is: true
+---
+
+The goal of this script is to study the tumor microenvironment of the wounding longitudinal experiment. Original data can be accessed from The data can be downloaded from GEO (GSE266665): https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE266665. Processing of the data as well as annotation is found in scripts 4*.Rmd.
+
+Load needed packages
+```{r, include=FALSE, fig.width=16, fig.height=12}
+renv::restore()
+library(Seurat)
+library(scGate)
+library(ggplot2)
+library(UCell)
+library(tidyr)
+library(dplyr)
+library(tibble)
+
+```
+
+
+# Load data
+Read in BCC longitudinal experiment:
+Two patients at three timepoints: Baseline (first biopsy), 1 week after surgery on same wound, 1 week after surgery at different location. 
+
+Original data can be accessed from The data can be downloaded from GEO (GSE266665): https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE266665. 
+Processing of the data is found in scripts 4*.Rmd.
+
+```{r}
+file_wh <- "cache/WHexp_annotated.rds"
+file_wh <- "~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/rds/WHexp_annotated.rds"
+
+p <- readRDS(file_wh)
+```
+
+
+# Annotate with scGate
+Load scGate models
+```{r, warning=F}
+# use SHA of the models for reproducibility 
+models <- get_scGateDB(branch = "1f650e5bfec2adb6ba121dcf90b6b0aef964c7ea",
+                       force_update = T)
+scgate.model <- models$human$HiTME
+
+```
+
+```{r}
+# split object by sample into a list
+spl <- SplitObject(p,
+                   split.by = "patient_bcc")
+
+# Run scGate models independently for each sample
+spl <- lapply(spl,
+              function(s){
+                scGate(s,
+                       model = scgate.model,
+                       multi.asNA = T,
+                       ncores = 9)
+              })
+```
+
+
+
+# Fine annotation of Stromal/Fibroblasts cells
+## Keep only Fibroblasts/stromal cells, removing cancer cells
+
+```{r}
+
+seu.fibro <- lapply(spl,
+                    function(s){
+                      subset(s, scGate_multi == "Fibroblast" &
+                               annotation != "Cancer_cells")
+                    })
+```
+
+
+## Load scGate models for Fibroblasts, pericytes and smooth muscle cells (SMC)
+Cancer-associated fibroblasts (CAF) were identified using the scGate method with specific fibroblast markers, excluding pericytes (PDGFA+, FBLN1+, FBLN2+, COL5A1+, LUM+, CFD+, RGS5-, NOTCH3-, MYOT-) and aggregated into a pseudo-bulk expression matrix for each sample. 
+
+```{r}
+pat <- "_scGate.tsv"
+dir <- "_aux/"
+
+mods.file <- list.files(dir, pattern = pat)
+
+mods <- lapply(mods.file, 
+               function(f){
+                 read.table(file.path(dir, f),
+                            header = T)
+               })
+
+names(mods) <- gsub(pat, "", mods.file)
+```
+
+## Fine annotation only Fibroblasts/stromal cells into bona fide fibroblasts, pericytes and SMC
+```{r}
+
+seu.fibro <- lapply(seu.fibro,
+                    function(s){
+                      scGate::scGate(s,
+                                     min.cells = 15,
+                                     model = mods,
+                                     ncores = 6,
+                                     pca.dim = 20)
+                    })
+```
+
+```{r}
+for(a in names(spl)){
+  cat("\n######", a, "########\n")
+  
+  table(seu.fibro[[a]]$scGate_multi) %>% print()
+  
+  table(Allsamples_onlyFibroblast_fineannot[[a]]$scGate_multi) %>% print()
+}
+
+
+for(a in names(spl)){
+  cat("\n######", a, "########\n")
+  
+  table(spl[[a]]$annotation) %>% print()
+  
+  table(WHexp_hitme_annotated[[a]]$annotation) %>% print()
+}
+```
+
+
+
+# TME proportions
+
+## Ratio of ratios:
+Do ratio of most relevant cell types in wounded samples,
+Compute the ratio of relative abundances of tumor microenvironment (TME) cell types (annotated by scGate) with respect to cancer cells, calculated between wounded and baseline paired samples (log2 scale, N=2). Bars represent the mean ratio for each cell type.
+
+```{r}
+# combine scGate annotation and cancer cells manual annotation
+pmeta <- lapply(spl, function(s){
+  m <- s@meta.data[, c("patient_bcc", "annotation", "scGate_multi")] %>% 
+    mutate(category = substr(patient_bcc, 1, nchar(patient_bcc)-1),
+           dataset = substr(patient_bcc, nchar(patient_bcc), nchar(patient_bcc)) 
+    ) %>% 
+    rownames_to_column("rn")
+  return(m)
+}) %>% 
+  data.table::rbindlist(fill = T)
+
+
+## fibroblast fine annotation
+fine <- lapply(seu.fibro, function(s){
+  m <- s@meta.data[,"scGate_multi", drop = F]%>% 
+    rownames_to_column("rn") %>% 
+    mutate(scGate_multi = ifelse(is.na(scGate_multi),
+                                 "unknown", scGate_multi))
+  names(m)[2] <- "fine_fibroblast"
+  return(m)
+}) %>% 
+  data.table::rbindlist(fill = T)
+
+# join whole annotation and fine fibroblast annotation
+cu <- left_join(pmeta, fine, by = "rn")
+
+cts <- c("CD4T", "CD8T", "MoMac", "panDC", "Fibroblast",
+         "Pericyte", "Cancer_cells", "Endothelial")
+cts2 <- c("CD4T", "CD8T", "MoMac", "panDC", "CAF",
+         "Pericyte", "Cancer_cells", "Endothelial")
+
+cu2 <- cu %>% 
+  mutate(annot = ifelse(annotation %in% c("Cancer_cells", "Doublets"),
+                        annotation,
+                        ifelse(!is.na(fine_fibroblast),
+                               fine_fibroblast,
+                               as.character(scGate_multi)
+                        )
+  )
+  ) %>% 
+  filter(annot %in% cts) %>% 
+  mutate(annot = factor(annot,
+                        levels = cts,
+                        labels = cts2)) %>% 
+  # keep 0s when counting
+  dplyr::count(patient_bcc, annot, .drop = F) %>% 
+  mutate(count = n+1, # apply pseudocount for conditions with cell types with 0 cells
+         ratio = count/count[annot == "Cancer_cells"], # do ratio vs Cancer cells
+         r2 = log2(ratio),
+         category = substr(patient_bcc, 1, nchar(patient_bcc)-1), # name of the condition
+         category2 = ifelse(category == "Wound",
+                            "Wound", "UnWound"),
+         dataset = substr(patient_bcc, nchar(patient_bcc), nchar(patient_bcc))) %>% 
+  filter(annot != "Cancer_cells") %>% 
+  # Filter unwound samples
+  filter(category != "Unwound")
+
+
+rcu <- cu2 %>% 
+  group_by(annot, category2, dataset) %>% 
+  summarize(ratio_mean = mean(ratio)) %>% 
+  group_by(annot, dataset) %>% 
+  summarize(rr = ratio_mean[category2 == "Wound"] / 
+              ratio_mean[category2 == "UnWound"],
+            ratio = log2(rr))
+
+```
+
+### Barplots
+
+```{r}
+# ratio plots
+plp <- rcu %>% 
+  ggplot(aes(annot, ratio)) +
+  geom_bar(stat = "summary",
+           fun = "mean",
+           fill = "grey86",
+           color = "black") +
+  geom_point(show.legend = F,
+             size = 3,
+             shape = 21,
+             fill = "grey15",
+             color = "black") +
+  ggprism::theme_prism() +
+  labs(title = "TME composition",
+       y = "log2 ratio Wound vs Baseline",
+       x = "Cell type") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))+
+  NoLegend()
+
+plp
+
+```
+### Lineplots
+Same information but pairing the data from each patient:
+
+```{r}
+# line plots
+lycols <- c("Baseline" = "#DEEBF7",
+            "Unwound" = "#9ECAE1",
+            "Wound" = "#3182BD")
+plp <- cu2 %>% 
+  ggplot(aes(category, r2, fill = category)) +
+  geom_line(aes(group = dataset),
+            show.legend = F,
+            color = "black") +
+  geom_point(aes(group = category),
+             size = 3,
+             shape = 21,
+             color = "black") +
+  scale_fill_manual(values = lycols) +
+  facet_wrap(~annot, strip.position = "top") +
+  ggprism::theme_prism() +
+  labs(title = "TME composition",
+       y = "log2 ratio vs cancer cells",
+       x = "") +
+  theme(
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_blank(),
+    legend.text = element_text(size = 12)) +
+  guides(fill = guide_legend(override.aes = list(size=4)))
+
+plp
+
+```
+
+# Differential expression of TME pools
+Let's perform differential expression of pseudobulk for each sample, comparing Wound vs. unwound+baseline.
+
+## Pseudobulk samples
+
+First do pseudobulk of all cell types in `cts`, for which we show proportions earlier.
+
+```{r}
+ct = cts[!cts %in% c("Cancer_cells", "Fibroblast", "Pericyte")]
+
+pseudo.p <- list()
+
+for(c in ct){
+  mat <- lapply(spl,
+                function(s){
+                  s@meta.data <- s@meta.data %>% 
+                    mutate(annot = ifelse(annotation %in% c("Cancer_cells", "Doublets"),
+                                          annotation, scGate_multi)
+                    )
+                  subs <- s@meta.data %>% filter(annot == c)
+                  # keep only cell type with at least 1 cell
+                  if(nrow(subs)>1){
+                    m <- AggregateExpression(s[,s$annot == c],
+                                             group.by = "patient_bcc")[["RNA"]] %>%
+                      as.matrix() %>% 
+                      t() %>%
+                      as.data.frame() %>%
+                      rownames_to_column("sample")
+                    m$sample <- unique(s$patient_bcc)
+                    return(m) 
+                  } else {
+                    return(NULL)
+                  }
+                }) %>%
+    # bind resulting dataframes
+    data.table::rbindlist(fill = T, use.names = T) %>%
+    column_to_rownames("sample") %>%
+    # convert NAs to 0
+    mutate_if(is.numeric, ~ifelse(is.na(.), 0, .)) %>%
+    t()
+  
+  pseudo.p[[c]] <- mat
+}
+
+```
+Extract also pseudobulk for Fibroblast and pericytes from finely annotated object
+
+```{r}
+ct = c("Fibroblast", "Pericyte")
+for(c in ct){
+  mat <- lapply(seu.fibro,
+                function(s){
+                  subs <- s@meta.data[s@meta.data$scGate_multi == c,]
+                  # keep only cell type with at least 1 cell
+                  if(nrow(subs)>1){
+                    m <- AggregateExpression(s[,s$scGate_multi == c],
+                                             group.by = "patient_bcc")[["RNA"]] %>%
+                      as.matrix() %>% 
+                      t() %>%
+                      as.data.frame() %>%
+                      rownames_to_column("sample")
+                    m$sample <- unique(s$patient_bcc)
+                    return(m) 
+                  } else {
+                    return(NULL)
+                  }
+                }) %>%
+    # bind resulting dataframes
+    data.table::rbindlist(fill = T, use.names = T) %>%
+    column_to_rownames("sample") %>%
+    # convert NAs to 0
+    mutate_if(is.numeric, ~ifelse(is.na(.), 0, .)) %>%
+    t()
+  
+  pseudo.p[[c]] <- mat
+  
+}
+```
+
+## Differential expression
+Let's use pseudobulk matrices to perform the differential expression analysis with DESeq2.
+Paired differential expression analysis was performed using the DESeq2 package63 on pseudo-bulk samples, comparing wounded vs. unwounded and baseline conditions.
+
+```{r}
+require(DESeq2)
+
+res.list <- list()
+
+for(c in names(pseudo.p)){
+  
+  mat <- pseudo.p[[c]]
+  
+  md.agg <- data.frame(sample = colnames(mat)) %>% 
+    mutate(patient_bcc = sample) %>% 
+    mutate(category = substr(patient_bcc, 1, nchar(patient_bcc)-1),
+           category2 = ifelse(category == "Wound",
+                              "Wound", "Unwound"),
+           dataset = substr(patient_bcc, nchar(patient_bcc), nchar(patient_bcc))
+    ) %>% 
+    column_to_rownames("sample")
+  
+  
+  dds <- DESeq2::DESeqDataSetFromMatrix(countData = mat,
+                                        colData = md.agg,
+                                        # indicate the pairing
+                                        design = ~ dataset + category2) 
+  #Remove genes with very low counts:
+  dds <- dds[rowSums(counts(dds)) > 6, ]
+  
+  # do Differential expression
+  de <- DESeq2::DESeq(dds)
+  
+  res <- DESeq2::lfcShrink(de,
+                           coef = DESeq2::resultsNames(de)[3],
+                           type = "apeglm")
+  
+  res.list[[c]] <- as.data.frame(res) 
+  
+}
+
+```
+
+## Fold change plot
+
+This plot show only differential expressed genes, without showing the p-value.
+It shows the number of differentially expressed genes (adjusted p-value < 0.05 and |log2 fold-change| > 0.5; DEG), and log2 fold-change of the DEG in 7 major components of the TME.
+
+```{r}
+col2 <- cols <-  c("Unwound" = "firebrick4",
+                   "Wound" = "blue4")
+
+# accommodate cell type names
+le <- c("CD4T", "CD8T", "MoMac", "panDC", "Fibroblast",
+        "Pericyte", "Endothelial")
+la <- c("CD4T", "CD8T", "MoMac", "panDC", "CAF",
+        "Pericyte", "Endothelial")
+
+
+li2 <- lapply(names(res.list), 
+              function(v){
+                res.list[[v]] %>%
+                  rownames_to_column("gene") %>% 
+                  mutate(celltype = v) %>% 
+                  filter(padj < 0.05) %>% 
+                  filter(abs(log2FoldChange) > 0.5)
+              }) %>% 
+  data.table::rbindlist() %>% 
+  mutate(category = ifelse(sign(log2FoldChange)>0,
+                           "Wound", "Unwound"),
+         celltype = factor(celltype,
+                           levels = le,
+                           labels = la),
+         sign = sign(log2FoldChange)
+  )
+
+nde <- table(li2$celltype) %>% sort()
+
+li2 <- li2 %>% 
+  mutate(celltype = factor(celltype,
+                           levels = names(nde)))
+
+fc <- 0.5        
+set.seed(22)
+hb <- ggplot(li2, aes(x=log2FoldChange, y=celltype,
+                      color=category,
+                      label= gene
+)) +
+  geom_jitter(size = 2, 
+              height=0.15,
+              width = 0) +
+  scale_color_manual(values = col2)+
+  geom_vline(xintercept = c(-fc, fc),
+             linetype = 2,
+             size = 0.3,
+             col = "grey20") +
+  scale_y_discrete(drop = F) +
+  xlim(c(-7,7)) +
+  labs(y = "Cell type",
+       x = "log2 Fold Change")+
+  ggprism::theme_prism()
+
+# Add text showing up and down genes
+lol <- table(li2$log2FoldChange>0, li2$celltype) %>%
+  as.data.frame() %>% filter(Var1 == TRUE)
+lol$Var1 <- "Wound"
+lol2 <- table(li2$log2FoldChange<0, li2$celltype) %>%
+  as.data.frame() %>% filter(Var1 == TRUE)
+lol2$Var1 <- "Unwound"
+lol3 <- rbind(lol2, lol) 
+
+names(lol3) <- c("category", "celltype", "Freq")
+
+lol3 <- lol3 %>% 
+  mutate(celltype = factor(celltype,
+                           levels = names(nde))) %>% 
+  arrange(celltype) %>% 
+  mutate(x = rep(c(-6.6,6.6), 7),
+         y =  c(1,1,2,2,3,3,4,4,5,5,6,6,7,7)
+  )
+
+
+
+
+hb2 <- hb + geom_text(
+  data    = lol3,
+  mapping = aes(x = x, y = y,
+                color = category,
+                label = as.character(Freq),
+                fontface=2),
+  size= 5,
+  show.legend = F
+)
+
+hb2
+```
+
+
+## Volcano plot for fibroblasts
+Show volcano plot for CAF using DE previously obtained.
+Differentially expressed genes in CAFs from wounded (N=2) vs. baseline (N=2) and unwounded (N=2) samples. Y axis shows -log10 of adjusted p-values, with a threshold at adj. p-val = 0.05. X axis shows log2 expression fold-change, with thresholds at |log2 fold-change| > 0.5. 
+
+Built function to produce the Volcano
+
+```{r}
+require(scales)
+volpl <- function(df, fc=2, fdr=0.05, tit = NA,
+                  NS = "NS", UP = "UP", DOWN = "DOWN",
+                  legend.title = "Differential expression"){
+  
+  cols <-  c("firebrick4","grey", "blue4")
+  names(cols) <- c(DOWN, NS, UP)
+  
+  Vol <- data.frame(log2FC= df$log2FoldChange,
+                    sig= -log10(df$padj), 
+                    gene = rownames(df))
+  Vol$S <- 0
+  Vol[which(Vol$sig<(-log10(fdr))), "S"] <- NS
+  Vol[which(Vol$log2FC> fc & Vol$S!="NS"), "S"] <- UP
+  Vol[which(Vol$log2FC < (-fc) & Vol$S!="NS"), "S"] <- DOWN
+  Vol[which(Vol$S==0), "S"] <- NS
+  Vol$S <- as.factor(Vol$S)
+  Vol$sig[Vol$sig == "Inf"] <- 320
+  Vol <- Vol[complete.cases(Vol),]
+  v_5 <- ggplot(Vol, aes(x=log2FC, y=sig,
+                         color = S, label=gene)) +
+    geom_point (size = 2, alpha=0.7,
+                show.legend = T) +
+    geom_vline(xintercept = c(-fc, fc), linetype = 1, size = 0.3, col = "grey20") +
+    geom_hline(yintercept = -log10(fdr), linetype = 1, size = 0.3, col = "grey20") +
+    scale_color_manual(values = cols) +
+    ggrepel::geom_text_repel(data = subset(Vol, (sig >= (-log10(fdr)) & abs(log2FC)> fc)),
+                             aes(label = Vol[(Vol$sig >= (-log10(fdr)) &
+                                               abs(Vol$log2FC) > fc),"gene"]),
+                             color="black",
+                             size=3,
+                             force = 30,
+                             max.overlaps = 30)+
+    labs(x = "log2 Fold Change",
+         y = "-log10 adj.p-value",
+         color = legend.title,
+         title = tit)+
+    scale_y_continuous(trans = pseudo_log_trans())+
+    scale_x_continuous(trans = pseudo_log_trans())+
+    ggprism::theme_prism() +
+    theme(
+      legend.text = element_text(size = 12)) +
+    guides(fill = guide_legend(override.aes = list(size=4)))
+  
+  return(v_5)        
+}
+```
+
+
+```{r}
+volpl(res.list$Fibroblast,
+      fc = 0.5,
+      tit = "CAF Wound vs Unwound")
+```
+
+
+## Obtain CAF wounding signatures
+Genes with a log2 fold change > 0.5 and adjusted p-value < 0.05 were identified as part of the wound signature, while those with a log2 fold change < -0.5 and adjusted p-value < 0.05 constituted the unwound/baseline signature.
+
+```{r}
+res0 <- res.list$Fibroblast %>% 
+  filter(padj<0.05 & abs(log2FoldChange) > 0.5) %>% 
+  mutate(type = ifelse(sign(log2FoldChange)>0,
+                   "Wound", "Unwound")
+    )
+
+res.spl <- split(res0, f = res0$type)
+
+lys <- lapply(res.spl, function(l){
+  l %>% 
+    mutate(fc = abs(log2FoldChange)) %>% 
+    rownames_to_column("gene") %>% 
+    pull(gene)
+})
+
+saveRDS(lys, "cache/CAF_signatures.rds")
+
+```
+
+
+
+
+
+
+
+
