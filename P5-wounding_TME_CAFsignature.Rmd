@@ -115,26 +115,6 @@ seu.fibro <- lapply(seu.fibro,
                     })
 ```
 
-```{r}
-for(a in names(spl)){
-  cat("\n######", a, "########\n")
-  
-  table(seu.fibro[[a]]$scGate_multi) %>% print()
-  
-  table(Allsamples_onlyFibroblast_fineannot[[a]]$scGate_multi) %>% print()
-}
-
-
-for(a in names(spl)){
-  cat("\n######", a, "########\n")
-  
-  table(spl[[a]]$annotation) %>% print()
-  
-  table(WHexp_hitme_annotated[[a]]$annotation) %>% print()
-}
-```
-
-
 
 # TME proportions
 
