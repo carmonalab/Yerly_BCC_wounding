@@ -657,7 +657,7 @@ pl <- all.mean %>%
 pl
 ```
 ### Ni score vs CAF score
-```{r corr_MP7_CAF}
+```{r corr_NI_CAF}
 pl <- all.mean %>% 
   # get only BCC samples
   filter(category %in% c("Invasive BCC", "Non-invasive BCC")) %>% 
