@@ -27,7 +27,7 @@ library(UCell)
 library(tidyr)
 library(dplyr)
 library(tibble)
-
+library(data.table)
 ```
 
 
@@ -86,7 +86,7 @@ seu.fibro <- lapply(spl,
 
 ## Load scGate models for Fibroblasts, pericytes and smooth muscle cells (SMC)
 
-Cancer-associated fibroblasts (CAF) were identified using the scGate method with specific fibroblast markers, excluding pericytes (PDGFA+, FBLN1+, FBLN2+, COL5A1+, LUM+, CFD+, RGS5-, NOTCH3-, MYOT-) and aggregated into a pseudo-bulk expression matrix for each sample. 
+Cancer-associated fibroblasts (CAF) were identified using the scGate method with specific fibroblast markers, excluding pericytes (PDGFA+, FBLN1+, FBLN2+, COL5A1+, LUM+, CFD+, RGS5-, NOTCH3-, MYOT-). 
 
 ```{r Load_stromal_models}
 pat <- "_scGate.tsv"
