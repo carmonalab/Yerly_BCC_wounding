@@ -18,7 +18,7 @@ The goal of this script is to study the tumor microenvironment of the wounding l
 Original data can be accessed from The data can be downloaded from GEO (GSE266665): https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE266665. Processing of the data as well as annotation is found in scripts 4*.Rmd.
 
 Load needed packages
-```{r, include=FALSE, fig.width=16, fig.height=12}
+```{r Load_packages, include=FALSE}
 renv::restore()
 library(Seurat)
 library(scGate)
@@ -570,6 +570,8 @@ lys <- lapply(res.spl, function(l){
 # save for scoring later
 saveRDS(lys, "cache/CAF_signatures.rds")
 ```
+
+This signatures will be then used in scripts P6*.Rmd for scoring the wound response in CAF in retrospective BCC samples.
 
 
 
