@@ -121,7 +121,6 @@ mat2 <- mat[, md$sample]
 ## Load wound-response CAF signatures
 
 Load signatures previously produced in `P5-wounding_TME_CAFsignature.Rmd`.
-Since GeoMx method is based on probes, some genes collected in the signatures are not present, we will remove them.
 
 ```{r Load_signatures}
 # Load file with signatures
