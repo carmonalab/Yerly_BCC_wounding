@@ -1,0 +1,380 @@
+---
+title: "Correlating MP activity with proximity to the wound in CosMx BCC dataset"
+Author: "Massimo Andreatta"
+date: "2024-06-18"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+Using a CosMx SMI spatial transcriptomics dataset of human BCC, we define an axis to quantify distance and orientation towards the wounding site. For each FOV, we quantify whether MP activity and CAF signature scores correlate with proximity to the wound.
+
+```{r}
+library(Seurat)
+library(sf)
+library(ggplot2)
+library(future)
+library(RColorBrewer)
+library(igraph)
+plan("sequential")
+```
+
+
+#Define functions to be used in this workbook
+1. Convert cardianal coordinates to angles (West is 0)
+```{r}
+dir_to_angle <- function(dir, radiants=FALSE) {
+  if (dir == "E") {
+    angle = 180
+  } else if (dir == "SE") {
+    angle = 225
+  } else if (dir == "S") {
+    angle = 270
+  } else if (dir == "SW") {
+    angle = 315
+  } else if (dir == "W") {
+    angle = 0
+  } else if (dir == "NW") {
+    angle = 45
+  } else if (dir == "N") {
+    angle = 90
+  } else if (dir == "NE") {
+    angle = 135
+  }
+  if (radiants) {
+    angle <- angle * pi / 180
+  }  
+  return(angle)
+}
+```
+
+2. Determine distance from wound for a given FOV, in a consistent system of coordinates across FOVs
+```{r}
+wound_direction <- function(obj, slide, fov) {
+  
+  use_slide_metadata <- grep(slide, unique(obj$Run_Tissue_name.x), value=T)
+  
+  cells_use <- seu.obj$id[(obj$fov == fov) &
+                          (obj$Run_Tissue_name.x == use_slide_metadata) &
+                          !is.na(obj$x)]
+  
+  dir <- unique(obj@meta.data[cells_use,"Wound_direction"])
+  angle <- dir_to_angle(dir)
+
+  meta.this <- suppressWarnings(subset(seu.obj, cells=cells_use))[[]]
+  rad <- angle * pi / 180
+  meta.this$xrotate <- meta.this$x * cos(rad) - meta.this$y * sin(rad)
+  meta.this$yrotate <- meta.this$x * sin(rad) + meta.this$y * cos(rad)
+  
+  #recenter
+  minx <- min(meta.this$xrotate)
+  miny <- min(meta.this$yrotate)
+  meta.this$xc <- meta.this$xrotate - minx
+  meta.this$yc <- meta.this$yrotate - miny
+  meta.this
+}
+```
+
+#Read in pre-processed data
+Pre-process data first, for cell type annotation, with 1-celltype_insitutype.Rmd
+```{r}
+seu.obj <- readRDS("cache/cosmx_insitutype_anno.rds")
+seu.obj$annotation_broad <- seu.obj$celltype
+palette <- seu.obj@misc$palette
+
+meta.names <- colnames(seu.obj[[]])
+meta.names <- gsub(".x$", "", meta.names, perl=T)
+colnames(seu.obj[[]]) <- meta.names
+```
+
+Include information for FOV distance from the wound
+```{r}
+seu.obj$Condition2 <- seu.obj$Condition
+ind <- which(!is.na(seu.obj$Dist_from_wound))
+seu.obj$Condition2[ind] <- paste(seu.obj$Condition[ind], seu.obj$Dist_from_wound[ind], sep="_")
+table(seu.obj$Condition2)
+```
+
+
+#Score MP signatures
+
+Read in cancer MP signatures, and fibroblast signatures
+```{r}
+mp_file <- "_aux/TableS2_MPs_filtered.csv"
+
+mps <- read.csv(mp_file)
+mps <- as.list(mps)
+
+#We can only evaluate genes in the CosMx panel
+panel <- rownames(seu.obj)
+
+mps <- lapply(mps, function(x) {
+  x[x %in% panel]
+})
+
+fb_file <- "_aux/TableS3_wrCAFsignatures.csv"
+
+fb <- read.csv(fb_file)
+fb <- as.list(fb)
+fb <- lapply(fb, function(x) {
+  x[x %in% panel]
+})
+
+```
+
+Score meta-programs
+```{r}
+library(UCell)
+seu.obj <- AddModuleScore_UCell(seu.obj, features=c(mps, fb), name="", ncores=8, maxRank = 200)
+```
+
+Also calculate differential signatures: MP7 minus MP2, and CAF_wound minus CAF_unwound
+```{r}
+seu.obj$invasiveness <- seu.obj$MP7.WoundResp - seu.obj$MP2.RadMig
+seu.obj$invasiveCAF <- seu.obj$CAF_wound - seu.obj$CAF_unwound.baseline
+
+cancer <- subset(seu.obj, subset=celltype=="Cancer.cells")
+caf <- subset(seu.obj, subset=celltype=="Fibroblast")
+```
+
+Correlation between MPs in CosMx data
+```{r}
+library(ggcorrplot)
+
+matrix <- as.matrix(cancer@meta.data[,names(mps)])
+colnames(matrix) <- gsub("\\.\\S+$", "", colnames(matrix))
+  
+corr_matrix <- cor(matrix)
+ggcorrplot(corr_matrix, method="circle", type="upper", hc.order = F)
+
+ggsave("plots/MP_scores_correlation_CosMx.pdf", height=3, width=4)
+```
+
+
+Add X and Y coordinates for cell centroids to metadata
+```{r}
+fovs <- unique(seu.obj$pat_fov)
+imgs <- Images(seu.obj)
+diet <- DietSeurat(seu.obj)
+diet@images <- list()
+
+meta.list <- lapply(fovs, function(f) {
+  
+  pat <- gsub("\\S+(Patient\\d+)_.*", replacement = "\\1", x = f, perl=T)
+  image <- grep(pattern = pat, x = Images(seu.obj), value=T)
+  
+  this <- subset(diet, subset=pat_fov == f)
+  cells_this <- colnames(this)
+  
+  centroid_data <- seu.obj@images[[image]]$centroids
+  centroid_this <- centroid_data@coords[centroid_data@cells %in% cells_this,]
+  rownames(centroid_this) <- centroid_data@cells[centroid_data@cells %in% cells_this]
+  
+  this <- AddMetaData(this, metadata = centroid_this)
+  
+  this[[]]
+})
+names(meta.list) <- fovs
+
+meta <- Reduce(f=rbind, x=meta.list)
+seu.obj <- AddMetaData(seu.obj, metadata = meta[,c("x","y")])
+```
+
+
+#Can we define an axis of distance from wound?
+
+Define first for one given FOV, to understand the rotation to a common wound axis
+```{r fig.width=15, fig.height=4}
+use_fov <- 19 # FOV desired 
+use_slide_metadata <- unique(seu.obj@meta.data$Run_Tissue_name.x)[1] 
+use_slide_image <- Images(seu.obj)[1]
+
+cells_of_interest <- seu.obj$id[(seu.obj$fov == use_fov) & ( seu.obj$Run_Tissue_name.x == use_slide_metadata)] 
+centroid_data <- seu.obj@images[[use_slide_image]]$centroids 
+zoom_fov <- apply(centroid_data@coords[centroid_data@cells %in% cells_of_interest,], 2, range)
+
+Idents(seu.obj) <- "celltype"
+ImageFeaturePlot(seu.obj,
+             fov = use_slide_image,
+             features = c("MP7.WoundResp"),
+             cells = WhichCells(seu.obj, idents = c("Cancer.cells")),
+             border.size = 0.2,
+             min.cutoff = 0, max.cutoff = 0.3) + xlim(zoom_fov[, 2]) + ylim(zoom_fov[, 1]) +
+  coord_flip()
+```
+
+
+```{r fig.height=5, fig.width=10}
+meta.this <- wound_direction(seu.obj, fov=use_fov, slide = 1)
+meta.cancer <- meta.this[meta.this$celltype=="Cancer.cells",]
+
+a <- ggplot(meta.this, aes(x=xc, y=yc, col=celltype)) + 
+  geom_point() + scale_color_manual(values=palette) + 
+  theme_light() + theme(aspect.ratio = 1)
+b <- ggplot(meta.this, aes(x=x, y=y, col=celltype)) + 
+  geom_point() + scale_color_manual(values=palette) +
+  theme_light() + theme(aspect.ratio = 1) + NoLegend()
+cols <- brewer.pal(9, 'Reds')
+c <- ggplot(meta.cancer, aes(x=xc, y=yc, col=MP7.WoundResp))+ 
+  geom_point() + theme_light() + theme(aspect.ratio = 1) +
+        scale_colour_gradientn(colours = cols)
+
+b | a | c
+```
+
+Eval. average signature score by spatial wounding coordinate
+```{r}
+meta.c <- meta.this[meta.this$celltype == "Cancer.cells",]
+
+ggplot(meta.c, aes(x=xc, y=MP7.WoundResp)) + geom_point() + theme_light()
+```
+
+Now we apply this approach systematically on all FOVs
+```{r fig.height=15, fig.width=25}
+library(patchwork)
+
+fovs_wound <- unique(seu.obj$pat_fov[seu.obj$Condition %in% c("Wound")])
+
+df.list <- lapply(fovs_wound, function(x) {
+  fov <- gsub("\\S+_\\S+_(\\d+)$", "\\1", x)
+  slide <- gsub("\\S+_(\\S+)_\\d+$", "\\1", x)
+  wound_direction(seu.obj, fov=fov, slide = slide)
+})
+names(df.list) = fovs_wound
+```
+
+
+```{r fig.height=11, fig.width=12}
+pll <- lapply(names(df.list), function(n) {
+  df <- df.list[[n]]
+  df <- df[df$celltype == "Cancer.cells",]
+  
+  lm <- lm(MP7.WoundResp ~ xc, data=df)
+  slope <- ifelse(lm$coefficients[2] >0, yes = "blue", no="red")
+  
+  ggplot(df, aes(x=xc, y=MP7.WoundResp)) + geom_point(col="gray80", alpha=0.5) +
+  geom_smooth(method='lm', formula= y~x, col=slope) +
+    ggtitle(n)  + theme_light()
+})
+wrap_plots(pll)
+
+pll <- lapply(names(df.list), function(n) {
+  df <- df.list[[n]]
+  df <- df[df$celltype == "Cancer.cells",]
+  
+  lm <- lm(MP2.RadMig ~ xc, data=df)
+  slope <- ifelse(lm$coefficients[2] >0, yes = "blue", no="red")
+  
+  ggplot(df, aes(x=xc, y=MP2.RadMig)) + geom_point(col="gray80", alpha=0.5) +
+  geom_smooth(method='lm', formula= y~x, col=slope) +
+    ggtitle(n)  + theme_light()
+})
+wrap_plots(pll)
+```
+
+Summarize by slope
+```{r}
+cols <- c("red","forestgreen","blue","deeppink","darkcyan","orange","darkmagenta")
+names(cols) <- names(mps)
+
+mp.grad <- lapply(names(mps), function(mp) {
+  slopes <- lapply(names(df.list), function(n) {
+    df <- df.list[[n]]
+    df <- df[df$celltype == "Cancer.cells",]
+    cor <- cor.test(df[,mp], df[,"xc"], method="spearman")
+    unname(-1 * cor$estimate)
+  })
+  names(slopes) <- names(df.list)
+  unlist(slopes)
+})
+names(mp.grad) <- names(mps)
+mp.grad <- as.data.frame(mp.grad)
+
+rownames(mp.grad) <- gsub(".cor","",rownames(mp.grad))
+rownames(mp.grad) <- gsub(".rho","",rownames(mp.grad))
+
+avgs <- apply(mp.grad, 2, mean)
+avgs <- sort(avgs, decreasing = T)
+order <- names(avgs)
+
+mp.grad$Condition <- sapply (rownames(mp.grad), function(p) {
+  unique(seu.obj@meta.data[seu.obj$pat_fov == p, "Condition2"])
+})
+
+#Now plot distribution by MP
+mp.grad <- as.data.frame(mp.grad)
+melt <- reshape2::melt(mp.grad)
+colnames(melt) <- c("Condition","MP","Correlation")
+
+melt$MP <- factor(melt$MP, levels=order)
+
+pJ <- ggplot(melt, aes(x=MP, y=Correlation, color=MP, shape=Condition)) + 
+ geom_jitter(position=position_jitter(0.2)) + theme_classic() +
+  scale_color_manual(values=cols) +
+   scale_shape_manual(values=c(16, 3)) +
+  geom_hline(yintercept=0) +
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ylab("Correlation with wound proximity") +
+  ggtitle("Cancer cells") 
+pJ
+
+ggsave("plots/wound_proximity_vs_MP_score.pdf", plot=pJ, height=4, width=6)
+
+```
+
+For CAF signatures
+```{r}
+caf.sigs <- c(names(fb), "invasiveCAF")
+
+mp.grad <- lapply(caf.sigs, function(mp) {
+  slopes <- lapply(names(df.list), function(n) {
+    df <- df.list[[n]]
+    df <- df[df$celltype == "Fibroblast",]
+    cor <- cor.test(df[,mp], df[,"xc"], method="spearman")
+    unname(-1 * cor$estimate)
+
+  })
+  names(slopes) <- names(df.list)
+  unlist(slopes)
+})
+names(mp.grad) <- caf.sigs
+mp.grad <- as.data.frame(mp.grad)
+
+rownames(mp.grad) <- gsub(".cor","",rownames(mp.grad))
+rownames(mp.grad) <- gsub(".rho","",rownames(mp.grad))
+
+avgs <- apply(mp.grad, 2, mean)
+avgs <- sort(avgs, decreasing = T)
+order <- names(avgs)
+
+mp.grad$Condition <- sapply (rownames(mp.grad), function(p) {
+  unique(seu.obj@meta.data[seu.obj$pat_fov == p, "Condition2"])
+})
+
+
+#Now plot distribution by MP
+mp.grad <- as.data.frame(mp.grad)
+melt <- reshape2::melt(mp.grad)
+colnames(melt) <- c("Condition","MP","Correlation")
+
+melt$MP <- factor(melt$MP, levels=order)
+
+pK <- ggplot(melt, aes(x=MP, y=Correlation, color=MP, shape=Condition)) + 
+ geom_jitter(position=position_jitter(0.2)) + theme_classic() +
+  scale_color_manual(values=c("darkred","red","darkblue")) +
+  scale_shape_manual(values=c(16, 3)) +
+  geom_hline(yintercept=0) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ylab("Correlation with wound proximity") +
+  ggtitle("CAF") 
+pK
+
+ggsave("plots/wound_proximity_vs_CAF_score.pdf", plot=pK, height=4, width=4)
+```
+
+
+
+```{r fig.height=5, fig.width=8}
+pJ + NoLegend() + pK +  plot_layout(widths = c(2, 1))
+ggsave("plots/wound_gradient_vs_MPs.pdf", height=5, width=8)
+```

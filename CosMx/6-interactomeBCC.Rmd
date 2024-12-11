@@ -1,0 +1,503 @@
+---
+title: "Cell-cell interactions in CosMx BCC dataset"
+Author: "Massimo Andreatta"
+date: "2024-06-18"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+Characterize the cell-cell interactions in a CosMx SMI spatial transcriptomics dataset of human BCC. We look at homotypic cell-cell interactions (i.e. between cells of the same type) vs. heterotypic cell-cell interactions (i.e. between cells of different types); in particular for cancer cells, are tumor samples/areas of a certain condition enriched in homotypic/heterotypic interactions? is the heterotypic on homotypic ratio a good representation of cancer complexity? The we attempt to quantify the interactome in terms of enriched interactions between pairs of cell types.
+
+Conditions: - nodular vs. infiltrative FOVs in nodular-ulcerated samples (locally containing both nodular and infiltrative areas)
+            - baseline (day 0) vs. wounded (day7 at same site) vs. unwounded (day7 at adjacent site)
+
+
+
+```{r}
+library(Seurat)
+library(sf)
+library(ggplot2)
+library(future)
+library(RColorBrewer)
+library(igraph)
+plan("sequential")
+```
+
+
+#Define functions to be used in this workbook
+
+1. Calculate vector of neighbors for each cell, adding a new column to metadata
+```{r}
+radius_nn <- function(meta, k=50, radius=200, types=NULL,
+                       meta.labels="celltype") {
+  
+  require(RANN)
+  
+  if (is.null(types)) {
+     types <- levels(meta[,meta.labels])
+  }
+  counts <- table(meta[,meta.labels])
+  
+  #exclude low quality
+  types <- types[!types %in% c("Unknown","Low.quality")]
+  
+  meta <- meta[meta[,meta.labels] %in% types,]
+  
+  coords <- meta[,c("x","y")]
+  labs <- meta[,meta.labels]
+  
+  # Find neighbors within the current radius range for each anchor cell
+  neighbors <- nn2(coords, k=k, searchtype = "radius", radius = radius)
+  #drop match to self
+  neighbors$nn.idx <- neighbors$nn.idx[,2:ncol(neighbors$nn.idx)]
+  
+  neighbors_vec <- apply(neighbors$nn.idx, 1, function(x) {
+    paste(x[x!=0],collapse=",")
+  })
+  meta$neighbors_vector <- neighbors_vec
+  
+  #Add vector of frequencies for neighbor types
+  neighbors_encode <- apply(neighbors$nn.idx, 1, function(x) {
+    x <- x[x!=0]
+    types <- table(labs[x])
+    paste(types,collapse=",")
+  })
+  meta$neighbors_encoding <- neighbors_encode
+  
+  meta
+}
+```
+
+2. Generate a title for spatial plots
+```{r}
+make_title <- function(obj, cells_of_interest) {
+  pat <-  unique(obj@meta.data[cells_of_interest,"Patient_ID"])
+  cond <- unique(obj@meta.data[cells_of_interest,"Condition"])
+  area <- unique(obj@meta.data[cells_of_interest,"Area_ID"])
+  dist <- unique(obj@meta.data[cells_of_interest,"Dist_from_wound"])
+  dir <- unique(obj@meta.data[cells_of_interest,"Wound_direction"])
+
+  title <- sprintf("%s (%i) - %s", pat, use_fov, cond)
+
+  if (!is.na(dist)) {
+    title <- sprintf("%s - %s", title, dist)
+  }
+  if (!is.na(dir)) {
+    title <- sprintf("%s - %s", title, dir)
+  }
+  return(title)
+}
+```
+
+3. For each cell, find the closest neighbor of each cell type
+```{r}
+closest_celltype <- function(meta, k=3, radius=1000, meta.labels="celltype",
+                             min.cells=5, symmetric = TRUE,
+                          types = NULL) {
+  require(RANN)
+  
+  if (is.null(types)) {
+     types <- levels(meta[,meta.labels])
+  }
+  counts <- table(meta[,meta.labels])
+  types <- types[types %in% names(counts)[counts >= min.cells]]
+  
+  #exclude low quality
+  types <- types[!types %in% c("Unknown","Low.quality")]
+  
+  meta <- meta[meta[,meta.labels] %in% types,]
+  
+  coords <- meta[,c("x","y")]
+  labs <- meta[,meta.labels]
+  
+  avgs <- data.frame(matrix(ncol = length(types) , nrow = length(types)), row.names = types)
+  sds <- data.frame(matrix(ncol = length(types) , nrow = length(types)), row.names = types)
+  colnames(avgs) <- types
+  colnames(sds) <- types
+  
+  for (l1 in types) {
+    query <- meta[meta[,meta.labels] == l1,]
+    query.c <- query[,c("x","y")]
+    for (l2 in types) {
+      data <- meta[meta[,meta.labels] == l2,]
+      data.c <- data[,c("x","y")]
+      
+      k.use <- min(k, nrow(data.c))
+      # Find neighbors within the current radius range for each anchor cell
+      neighbors <- nn2(data=data.c, query=query.c, k=k.use, searchtype = "radius", radius = radius)
+      
+      min.dist <- apply(neighbors$nn.dists, 1, function(r) {
+        r <- r[r>0]
+        if (length(r) < 1) {
+          min <- radius
+        } else {
+          min <- min(r)
+        }
+        min
+      })
+      
+      avgs[l1,l2] <- mean(min.dist)
+      sds[l1,l2] <- sd(min.dist)
+    }
+  }
+  
+  if (symmetric) {
+    for (i in 1:nrow(avgs)) {
+      for (j in 1:ncol(avgs)) {
+        if (avgs[i,j] > avgs[j,i]) {
+          avgs[i,j] <- avgs[j,i]
+          sds[i,j] <- sds[j,i]
+        }
+      }
+    }
+  }
+  
+  closest <- list()
+  closest$avg <- avgs
+  closest$sd <- sds
+  return(closest)
+}  
+```
+
+4. Draw interactome of a sample as a graph
+```{r}
+make.graph.plot <- function(meta, knn.res, min.value=3, width.wgt=0.2, layout=c("kk","fr")) {
+  
+  g <- graph_from_adjacency_matrix(as.matrix(1000/knn.res$avg), mode="undirected", weighted=T, diag=F)
+  gsd <- graph_from_adjacency_matrix(as.matrix(1000/knn.res$sd), mode="undirected", weighted=T, diag=F)
+  
+  #E(g)$width <- width.wgt*(E(g)$weight)
+  E(g)$width <- width.wgt*(E(gsd)$weight)
+  
+  E(g)$width[E(g)$weight < min.value] <- 0
+  g <- g - E(g)[E(g)$width == 0]
+  
+  V(g)$color <- palette[V(g)$name]
+  
+  wgt <- table(meta$celltype)
+  wgt <- wgt/sum(wgt)
+  wgt <- wgt[colnames(knn.res$avg)]
+  V(g)$size <- 100*sqrt(wgt)+1
+  
+  if (layout[1] == "fr") {
+     plot(g, layout=layout_with_fr(g, weight = E(g)$weight))
+  } else {
+     plot(g, layout=layout_with_kk(g, weight = round(1000/E(g)$weight)))
+  }
+}
+```
+
+
+#Read in pre-processed data
+Pre-process data first, for cell type annotation, with 1-celltype_insitutype.Rmd
+```{r}
+seu.obj <- readRDS("cache/cosmx_insitutype_anno.rds")
+seu.obj$annotation_broad <- seu.obj$celltype
+palette <- seu.obj@misc$palette
+
+meta.names <- colnames(seu.obj[[]])
+meta.names <- gsub(".x$", "", meta.names, perl=T)
+colnames(seu.obj[[]]) <- meta.names
+```
+
+Include information for FOV distance from the wound
+```{r}
+seu.obj$Condition2 <- seu.obj$Condition
+ind <- which(!is.na(seu.obj$Dist_from_wound))
+seu.obj$Condition2[ind] <- paste(seu.obj$Condition[ind], seu.obj$Dist_from_wound[ind], sep="_")
+table(seu.obj$Condition2)
+```
+
+
+# Estimate average cell radius
+```{r}
+areas <- seu.obj$Area
+hist(areas)
+q <- quantile(areas)
+
+area_avg <- q["50%"]
+radius_avg <-  sqrt(area_avg/pi)
+```
+
+#Score MP signatures
+
+Read in cancer MP signatures, and fibroblast signatures
+```{r}
+mp_file <- "_aux/TableS2_MPs_filtered.csv"
+
+mps <- read.csv(mp_file)
+mps <- as.list(mps)
+
+#We can only evaluate genes in the CosMx panel
+panel <- rownames(seu.obj)
+
+mps <- lapply(mps, function(x) {
+  x[x %in% panel]
+})
+
+fb_file <- "_aux/TableS3_wrCAFsignatures.csv"
+
+fb <- read.csv(fb_file)
+fb <- as.list(fb)
+fb <- lapply(fb, function(x) {
+  x[x %in% panel]
+})
+
+```
+
+Score meta-programs
+```{r}
+library(UCell)
+seu.obj <- AddModuleScore_UCell(seu.obj, features=c(mps, fb), name="", ncores=8, maxRank = 200)
+```
+
+Also calculate differential signatures: MP7 minus MP2, and CAF_wound minus CAF_unwound
+```{r}
+seu.obj$invasiveness <- seu.obj$MP7.WoundResp - seu.obj$MP2.RadMig
+seu.obj$invasiveCAF <- seu.obj$CAF_wound - seu.obj$CAF_unwound.baseline
+
+cancer <- subset(seu.obj, subset=celltype=="Cancer.cells")
+caf <- subset(seu.obj, subset=celltype=="Fibroblast")
+```
+
+
+Add X and Y coordinates for cell centroids to metadata
+```{r}
+fovs <- unique(seu.obj$pat_fov)
+imgs <- Images(seu.obj)
+diet <- DietSeurat(seu.obj)
+diet@images <- list()
+
+meta.list <- lapply(fovs, function(f) {
+  
+  pat <- gsub("\\S+(Patient\\d+)_.*", replacement = "\\1", x = f, perl=T)
+  image <- grep(pattern = pat, x = Images(seu.obj), value=T)
+  
+  this <- subset(diet, subset=pat_fov == f)
+  cells_this <- colnames(this)
+  
+  centroid_data <- seu.obj@images[[image]]$centroids
+  centroid_this <- centroid_data@coords[centroid_data@cells %in% cells_this,]
+  rownames(centroid_this) <- centroid_data@cells[centroid_data@cells %in% cells_this]
+  
+  this <- AddMetaData(this, metadata = centroid_this)
+  
+  this[[]]
+})
+names(meta.list) <- fovs
+```
+
+Calculate vector of neighbors for each cell, adding a new column to metadata
+```{r}
+#how many radii to look for neighboring cells
+distance_max <- 5*radius_avg
+
+#meta <- meta.list$Run6057_Patient1_1
+meta <- Reduce(f=rbind, x=meta.list)
+
+meta <- radius_nn(meta, radius = distance_max)
+```
+
+
+
+# Calculate homotypic vs. heterotypic cell-cell interactions
+
+Homotypic cell-cell interactions (for cancer cells) are defined as those where the majority (>90%) of neighbors of a given cancer cell are also cancer cells (or normal keratinocytes, or melanocytes); otherwise the interaction is labeled as heterotypic.
+```{r}
+levs <- levels(meta$celltype)
+
+cancer <- meta[meta$celltype == "Cancer.cells",]
+
+#Define which cell types in neighborhood, and at which min frequency, to consider a cell homotypic
+idx <- which(levs %in% c("Cancer.cells", "Normal.Kerat", "Melanocyte"))
+
+min.fq <- 0.9
+
+#cancer cells with only cancer cells as neighbors
+cancer.homo <- sapply(cancer$neighbors_encoding, function(x) {
+  vec <- as.numeric(strsplit(x, split=",")[[1]])
+  sum <- sum(vec[idx])
+  tot <- sum(vec)
+  
+  if (sum > 0 & sum/tot >= min.fq) {
+    "homotypic"
+  } else {
+    "heterotypic"
+  }
+})
+cancer$homotypic <- cancer.homo
+```
+
+Homo/heterotypic interaction are only defined for cancer cells here.
+```{r}
+seu.obj$homotypic <- "non-cancer"
+seu.obj@meta.data[rownames(cancer),"homotypic"] <- cancer$homotypic
+
+seu.obj$homotypic <- factor(seu.obj$homotypic, levels=c("homotypic","heterotypic","non-cancer"))
+
+seu.obj <- AddMetaData(seu.obj, metadata = meta[,c("x","y","neighbors_vector","neighbors_encoding")])
+```
+
+Include coordinates as a dim reduction
+```{r}
+matrix <- seu.obj@meta.data[,c("x","y")]
+dimred <- as.matrix(matrix)
+colnames(dimred) <- c("XY_1","XY_2")
+#New dim reduction
+seu.obj@reductions[["XY"]] <- new("DimReduc",
+                                         cell.embeddings = dimred,
+                                         assay.used = "Nanostring",
+                                         key = "XY_",
+                                         global = FALSE)
+```
+
+
+
+Make a plot of heterotypic vs. homotypic interactions for a given FOV
+```{r fig.height=5, fig.width=12}
+use_fov <- 38 # FOV desired 
+use_slide_metadata <- unique(seu.obj@meta.data$Run_Tissue_name.x)[1] # Slide desired, as named in the metadata column ‘Run_Tissue_name’ 
+use_slide_image <- Images(seu.obj)[1] # Slide desired, as named in images 
+
+cells_of_interest <- seu.obj$id[(seu.obj$fov == use_fov) & ( seu.obj$Run_Tissue_name.x == use_slide_metadata)] 
+centroid_data <- seu.obj@images[[use_slide_image]]$centroids 
+zoom_fov <- apply(centroid_data@coords[centroid_data@cells %in% cells_of_interest,], 2, range)
+
+title <- make_title(seu.obj, cells_of_interest)
+
+# visualize FOV using default settings (no cell boundaries)
+p1 <- ImageDimPlot(seu.obj, fov = use_slide_image, axes = TRUE, size = 0.7,
+                   border.color = "black",
+                   border.size = 0.1,
+                   dark.background = F,
+                   group.by = "celltype",
+                   cols = palette,
+                   flip_xy = FALSE,
+                   coord.fixed = TRUE) +
+  theme_void() + theme(aspect.ratio = 1) +
+  xlim(zoom_fov[, 2]) +
+  ylim(zoom_fov[, 1]) + ggtitle(title)
+
+p2 <- ImageDimPlot(seu.obj, fov = use_slide_image, axes = TRUE, size = 0.7,
+                   border.color = "black",
+                   border.size = 0.1,
+                   dark.background = F,
+                   group.by = "homotypic",
+                   cols = c("cyan3","deeppink","white"),
+                   flip_xy = FALSE,
+                   coord.fixed = TRUE) +
+  theme_void() + theme(aspect.ratio = 1) +
+  xlim(zoom_fov[, 2]) +
+  ylim(zoom_fov[, 1]) + ggtitle(title)
+
+p1 | p2
+
+ggsave("plots/homotypic_patA_fov38.pdf", height=5, width=12)
+```
+
+
+Save object with homo/heterotypic annotation
+```{r}
+#Clean up a bit the meta-data
+to_keep <- c("pat_fov", "orig.ident", "nCount_Nanostring", "nFeature_Nanostring", 
+             "cell_ID", "fov", "Area", "AspectRatio", "Width", "Height", "Mean.PanCK", 
+             "Max.PanCK", "Mean.CD68", "Max.CD68", "Mean.Membrane", "Max.Membrane", 
+             "Mean.CD45", "Max.CD45", "Mean.DAPI", "Max.DAPI", "Slide_name", 
+             "Run_name", "Run_Slide_name", 
+             "slide_ID_numeric", "Run_Tissue_name.x", "log10totalcounts", "id", "Run_Tissue_name.y", 
+             "FOV", "Patient_ID", "Area_ID", "Condition", "Ulcerated_area", 
+             "Dist_from_wound", "Wound_direction", "Morphology",
+             "prop_neg", "low_quality", "celltype", "celltype_prob",
+             "Run_Tissue_name", "Condition2", "MP1.CellCyc", "MP2.RadMig", 
+             "MP3.EpiDiff", "MP4.Angiogen", "MP5.Hypoxia", "MP6.Stress", "MP7.WoundResp", 
+             "CAF_wound", "CAF_unwound.baseline", "CAF_wound-unwound", "invasiveness", 
+             "invasiveCAF", "homotypic", "x", "y", "neighbors_vector", "neighbors_encoding")
+seu.obj@meta.data <- seu.obj@meta.data[,to_keep]
+
+saveRDS(seu.obj, "cache/CosMx_BCC_Yerly_2024_wMeta.rds")
+```
+
+
+#Heterotypic/homotypic ratio as a metric of morphological complexity
+```{r}
+library(dplyr)
+
+tab <- table(seu.obj$pat_fov, seu.obj$homotypic)
+tab <- as.data.frame.matrix(tab)
+colnames(tab) <- c("homotypic","heterotypic","other")
+
+tab$hetero_fraction <- tab$heterotypic / tab$homotypic
+order <- rownames(tab)
+
+#Add metadata
+meta <- seu.obj@meta.data[,c("pat_fov","Condition","Condition2","Ulcerated_area",
+                             "Dist_from_wound","Morphology")] %>% distinct()
+rownames(meta) <- meta$pat_fov
+meta <- meta[order,]
+
+tab <- cbind(tab, meta)
+
+#restrict to minimum # of cancer cells
+min.cancer.cells <- 200
+tab <- tab[tab$homotypic + tab$heterotypic > min.cancer.cells,]
+
+tab$Condition2 <- factor(tab$Condition2, levels=c("Baseline","Unwound","Wound_Far","Wound_Close"))
+
+```
+
+Evaluate heterotypic/homotypic ratio in nodular vs. infiltrative FOVs
+```{r fig.height=3.5, fig.width=3}
+library(ggpubr)
+tab.use <- tab[tab$Condition %in% c("Ulcerated_nodular") & tab$Morphology %in% c("Nodular","Infiltrative"),]
+
+px <- ggplot(tab.use, aes(x=Morphology, y=hetero_fraction, fill=Morphology)) + 
+  geom_boxplot(outlier.shape = NA) + theme_classic2() +
+  geom_point(aes(fill = Morphology), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("Morphological complexity") +
+  scale_fill_manual(values=c("#F44400","#FFFF6C")) +
+  stat_compare_means(label="p.format", size=3) +
+  ylim(c(0,2))
+px 
+
+ggsave("plots/morph_complexity_by_nodinf.pdf", height=3.5, width=3)
+```
+
+Evaluate heterotypic/homotypic ratio in baseline vs. unwound vs. wound (close and far from the wound)
+```{r fig.height=5, fig.width=4}
+tab.use <- tab[tab$Condition %in% c("Baseline","Unwound","Wound"),]
+
+my_comparisons <- list( c("Baseline", "Wound_Close"), c("Baseline", "Wound_Far"), 
+                        c("Unwound", "Wound_Close"))
+
+px <- ggplot(tab.use, aes(x=Condition2, y=hetero_fraction, fill=Condition2)) + 
+  geom_boxplot(outlier.shape = NA) + theme_classic2() +
+  geom_point(aes(fill = Condition2), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) +
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("Morphological complexity") +
+  scale_fill_manual(values=c("#07f495","#f4ec07","orange","#f44007")) +
+  stat_compare_means(comparisons = my_comparisons)
+px 
+
+ggsave("plots/morph_complexity_by_wounding.pdf", height=4.5, width=3.5)
+```
+
+# Represent interactome within a sample as a graph
+```{r}
+set.seed(1234)
+meta.all <- seu.obj[[]]
+
+base <- meta.all[meta.all$Condition == "Baseline",]
+unwound <- meta.all[meta.all$Condition == "Unwound",]
+wound <- meta.all[meta.all$Condition == "Wound",]
+
+closest.b <- closest_celltype(base, radius = 100*radius_avg, k=3)
+closest.u <- closest_celltype(unwound, radius = 100*radius_avg, k=3)
+closest.w <- closest_celltype(wound, radius = 100*radius_avg, k=3)
+
+#kk  layout
+make.graph.plot(base, knn.res=closest.b, min.value=3, width.wgt=0.2, layout="kk")
+make.graph.plot(unwound, knn.res=closest.u, min.value=3, width.wgt=0.2, layout="kk")
+make.graph.plot(wound, knn.res=closest.w, min.value=3, width.wgt=0.2, layout="kk")
+```

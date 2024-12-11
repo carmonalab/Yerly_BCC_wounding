@@ -1,0 +1,254 @@
+---
+title: "Cell type classification of CosMx data using inSituType"
+Author: "Massimo Andreatta"
+date: "2024-06-18"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+
+This workbook analyzed a CosMx SMI in situ transcriptomics dataset of human BCC. It performs pre-processing and basic QC, and applies InSituType to predict cell type identities for the spatial transcriptomics dataset.
+
+```{r}
+library(Seurat)
+library(sf)
+library(ggplot2)
+library(remotes)
+library(future)
+library(glmGamPoi)
+library(InSituType)
+
+plan("sequential")
+options(future.globals.maxSize = 8000 * 1024^2)
+set.seed(1234)
+```
+# Load the dataset
+
+Get object with pre-processed CosMx data from: https://zenodo.org/records/14330691
+Direct download link: https://zenodo.org/records/14330691/files/CosMx_BCC_Yerly_2024.rds?download=1
+
+NOTE: the object on Zenodo already contains meta-data after processing (e.g. predicted cell types, homotypic/heterotypic cancer cells, MP scores, etc.). Since no cells were removed, and transcript data were not subject to transformation, we can start analyses from this object, ignoring the meta-data.
+
+```{r}
+data_dir <- "./"
+seu.obj <- readRDS(paste0(data_dir,"CosMx_BCC_Yerly_2024.rds"))
+
+#explicitly exclude meta-data from pre-processed object
+seu.obj@meta.data <- seu.obj@meta.data[, c(1:27)]
+```
+
+Set up some directories
+```{r}
+dir.create("./plots")
+dir.create("./cache")
+```
+
+
+Load sample-level metadata
+```{r}
+meta <- read.csv("_aux/Sample_metadata.csv")
+meta$pat_fov <- paste(meta$Run_Tissue_name, meta$FOV, sep = "_")
+
+seu.obj@meta.data[,"pat_fov"] <- paste(seu.obj$Run_Tissue_name.x, seu.obj@meta.data$fov, sep = "_")
+
+order <- rownames(seu.obj@meta.data)
+meta.merged <- merge(x = seu.obj@meta.data, y = meta,
+                     by = "pat_fov")
+
+rownames(meta.merged) <- meta.merged$id
+meta.merged <- meta.merged[order, ]
+
+seu.obj@meta.data <- meta.merged
+```
+
+
+Basic QC to flag low-quality cells
+```{r}
+Idents(seu.obj) <- "tissue"
+VlnPlot(seu.obj, features=c("nCount_Nanostring","nFeature_Nanostring"), pt.size=0)
+quantile(seu.obj$nCount_Nanostring, probs = c(0,0.01, 0.02, 0.05, 0.1, 0.5, 0.9, 0.95, 0.99))
+quantile(seu.obj$nFeature_Nanostring, probs = c(0,0.01, 0.02, 0.05, 0.1, 0.5, 0.9, 0.95, 0.99))
+```
+
+Normalize data
+```{r}
+DefaultAssay(seu.obj) <- "Nanostring"
+seu.obj <- NormalizeData(seu.obj, scale.factor = 10000) 
+seu.obj <- JoinLayers(seu.obj)
+```
+
+Proportion of counts from negative controls
+```{r}
+negs <- grep("Negative",rownames(seu.obj), value=T)
+
+#mat1 <- LayerData(seu.obj, layer="counts.1")
+#mat2 <- LayerData(seu.obj, layer="counts.2")
+#mat <- cbind(mat1, mat2)
+
+mat <- LayerData(seu.obj, layer="counts")
+
+prop_neg <- apply(mat, 2, function(x) {
+  sum(x[negs])/sum(x)
+})
+quantile(prop_neg, c(0,0.01,0.05,0.1,0.5,0.9,0.95,0.99,1))
+hist(prop_neg, breaks=100)
+```
+
+Tag cells with high proportion of negatives and low counts
+```{r}
+seu.obj$prop_neg <- prop_neg
+
+cells_pass <- colnames(seu.obj)[seu.obj$prop_neg <= 0.02 &
+                                  seu.obj$nCount_Nanostring >= 100 &
+                                  seu.obj$nFeature_Nanostring >= 100]
+
+seu.obj$low_quality <- TRUE
+seu.obj$low_quality[cells_pass] <- FALSE 
+```
+
+# Run InSituType
+
+InSituType performs label transfer (cell types) from a reference dataset to a spatial transcriptomics query dataset
+
+1. Counts for query
+```{r}
+counts <- LayerData(seu.obj, layer="counts")
+```
+
+2. Negative control value
+```{r}
+negs <- grep("Negative",rownames(seu.obj), value=T)
+counts.neg <- counts[negs,]
+
+negmean <- Matrix::colMeans(counts.neg)
+```
+
+3. A "reference matrix" giving the expected expression profile of each cell type, with genes in rows and cell types in columns. 
+The reference matrix must be in linear-scale, not log-scale. Insitutype can handle aligning its genes (rows) to your counts matrix. 
+For supervised cell typing, the reference matrix should contain every cell type present in the tissue.
+If you suspect the tissue has cell types outside your reference matrix, use insitutype's semi-supervised clustering capability. 
+
+We will use, as a reference, a collection of seven BCC scRNA-seq samples, with their cell type annotation:
+https://doi.org/10.6084/m9.figshare.28001816.v1
+
+Direct download link: https://figshare.com/ndownloader/files/51086786
+
+```{r}
+ref.path <- "./BCC_human.rds"  
+if (!file.exists(ref.path)) {
+  download.file("https://figshare.com/ndownloader/files/51086786", "BCC_human.rds")
+}
+
+ref.bcc <- readRDS(ref.path)
+
+ref.profiles <- AverageExpression(ref.bcc, assays = "integrated", return.seurat = F,
+                                  group.by = "functional.cluster", slot = "counts")
+
+ref.profiles <- as.data.frame(ref.profiles)
+colnames(ref.profiles) <- gsub("integrated.","", colnames(ref.profiles))
+```
+
+#Get neutrophils profile from Zilionis et al. (2019)
+See article: 10.1016/j.immuni.2019.03.009
+
+```{r}
+zil.profiles <- read.csv(file="_aux/zilionis_2019_averageprofiles.csv")
+rownames(zil.profiles) <- zil.profiles$X
+
+colnames(zil.profiles) <- gsub("RNA.","", colnames(zil.profiles))
+
+genes2use <- intersect(rownames(ref.profiles), rownames(zil.profiles))
+ref.profiles <- ref.profiles[genes2use,]
+zil.profiles <- zil.profiles[genes2use,]
+
+#Add neutrophils to ref
+ref.profiles$Neutrophil <- zil.profiles$tNeutrophils
+```
+
+
+Color palette for reference
+```{r}
+palette1 <- ref.bcc@misc$atlas.palette
+palette1["Neutrophil"] <- "#9c5f0a"
+palette1["Low.quality"] <- "gray90"
+palette1["Unknown"] <- "gray70"
+names(palette1) <- gsub("_",".",names(palette1))
+```
+
+Run supervised cell typing by calling insitutypeML:
+
+```{r sup, echo=TRUE}
+sup <- insitutypeML(x = t(counts),
+                    neg = negmean,
+                    cohort = seu.obj$Area_ID,
+                    reference_profiles = as.matrix(ref.profiles)) 
+```
+
+
+```{r}
+seu.obj$celltype <- NA
+seu.obj$celltype[names(sup$clust)] <- sup$clust
+
+seu.obj$celltype_prob <- 0
+seu.obj$celltype_prob[names(sup$prob)] <- sup$prob
+hist(seu.obj$celltype_prob)
+quantile(seu.obj$celltype_prob, probs = c(0,0.01,0.02,0.03,0.04,0.05,0.1))
+```
+
+```{r}
+VlnPlot(seu.obj, features = "celltype_prob", group.by = "celltype", pt.size = 0)
+```
+
+Label unknown and low-quality cells (we save neutrophils from this check, since they have fewer counts)
+```{r}
+low_qual <- TRUE
+#unknown_thr <- 0.9
+unknown_thr <- 0
+
+labels <- seu.obj$celltype[!is.na(seu.obj$celltype)]
+
+if (low_qual) {
+  labels[seu.obj$low_quality == TRUE & !seu.obj$celltype == "Neutrophil"] <- "Low.quality"
+  labels[seu.obj$celltype_prob < unknown_thr] <- "Unknown"
+}
+seu.obj$celltype <- "Unknown"
+seu.obj$celltype[names(labels)] <- labels
+
+seu.obj$celltype <- factor(seu.obj$celltype, levels=names(palette1))
+```
+
+```{r}
+seu.obj@misc$palette <- palette1
+saveRDS(seu.obj, "cache/cosmx_insitutype_anno.rds")
+```
+
+```{r fig.width=10, fig.height=4}
+genes <- c("PTCH1","SPON2","KRT6A","KRT5","KRT15","PMEL","MLANA","AQP1","PLVAP",
+           "COL1A2","COL3A1","RGS5","MCAM","TPSAB1/2","CPA3",
+           "LYZ","HLA-DRA","CD79A","MS4A1","IGKC","MZB1",
+            "TRAC", "CD2","CD3D","CD3E","CSF3R","G0S2","S100A8","LCK","PTPRC")
+
+notna <- colnames(seu.obj)[!is.na(seu.obj$celltype)]
+to.plot <- subset(seu.obj, cells=notna)
+to.plot$celltype <- factor(to.plot$celltype, levels=rev(levels(to.plot$celltype)))
+
+Idents(to.plot) <- "celltype"
+DotPlot(to.plot, features = unique(genes), cols="RdBu", scale=T, col.max=2) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+ggsave("plots/cosmx_annotation_broad_dotplot.pdf", height=4, width=10)
+```
+
+
+```{r}
+set.seed(1234)
+seu.obj <- seu.obj |> FindVariableFeatures(nfeatures=1000) |>
+  ScaleData() |> RunPCA(npcs=30) |> RunUMAP(dims=1:30)
+```
+
+```{r fig.height=5, fig.width=6}
+DimPlot(seu.obj, group.by = "celltype", label = T, repel = T,
+        label.size = 2, raster=T, cols = palette1) +
+    theme(aspect.ratio = 1) + ggtitle("Cell types")
+ggsave("plots/cosmx_annotation_broad_umap.pdf", height=4, width=6)
+```

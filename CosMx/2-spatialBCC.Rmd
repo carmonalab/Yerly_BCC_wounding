@@ -1,0 +1,415 @@
+---
+title: "BCC CosMx spatial analysis and visualization"
+Author: "Massimo Andreatta"
+date: "2024-06-18"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+This script contains function for visualizing CosMx SMI spatial data.
+Based on a pre-processed in situ transcriptomics dataset, we visualize multiple categorical and quantitative variables in the tissue, including predicted cell type, meta-program activity, and CAF signature activation.
+
+
+```{r}
+library(Seurat)
+library(sf)
+library(ggplot2)
+library(future)
+plan("sequential")
+```
+
+#Read in pre-processed data
+
+Pre-process data first, for cell type annotation, with 1-celltype_insitutype.Rmd
+```{r}
+seu.obj <- readRDS("cache/cosmx_insitutype_anno.rds")
+
+meta.names <- colnames(seu.obj[[]])
+meta.names <- gsub(".x$", "", meta.names, perl=T)
+colnames(seu.obj[[]]) <- meta.names
+```
+
+
+Include information for FOV distance from the wound
+```{r}
+seu.obj$Condition2 <- seu.obj$Condition
+ind <- which(!is.na(seu.obj$Dist_from_wound))
+seu.obj$Condition2[ind] <- paste(seu.obj$Condition[ind], seu.obj$Dist_from_wound[ind], sep="_")
+table(seu.obj$Condition2)
+```
+
+```{r}
+library(RColorBrewer)
+palette2 <- seu.obj@misc$palette
+```
+
+Helper functions
+```{r}
+make_title <- function(obj, cells_of_interest) {
+  pat <-  unique(obj@meta.data[cells_of_interest,"Patient_ID"])
+  cond <- unique(obj@meta.data[cells_of_interest,"Condition"])
+  area <- unique(obj@meta.data[cells_of_interest,"Area_ID"])
+  ulc <- unique(obj@meta.data[cells_of_interest,"Ulcerated_area"])
+  dist <- unique(obj@meta.data[cells_of_interest,"Dist_from_wound"])
+  dir <- unique(obj@meta.data[cells_of_interest,"Wound_direction"])
+  
+  if (is.na(ulc)) {
+    title <- sprintf("%s (%i) - %s", pat, use_fov, cond)
+  } else {
+    title <- sprintf("%s (%i) - %s", pat, use_fov, ulc)
+  }
+  if (!is.na(dist)) {
+    title <- sprintf("%s - %s", title, dist)
+  }
+  if (!is.na(dir)) {
+    title <- sprintf("%s - %s", title, dir)
+  }
+  return(title)
+}
+
+```
+
+Plot cell type for area
+```{r}
+plot_celltype_region <- function(seu.obj,
+                                 patient_id="PatientA",
+                                 condition="Wound",
+                                 slide=1,
+                                 celltype.metadata="celltype",
+                                 palette=NA) {
+  
+  use_slide_metadata <- unique(seu.obj@meta.data$Run_Tissue_name.x)[slide] 
+  use_slide_image <- Images(seu.obj)[slide] # Slide desired, as named in images 
+  
+  
+  cells_of_interest <- seu.obj$id[(seu.obj$Patient_ID == patient_id) &
+                                    (seu.obj$Condition %in% condition) &
+                                    ( seu.obj$Run_Tissue_name.x == use_slide_metadata)] 
+  centroid_data <- seu.obj@images[[use_slide_image]]$centroids 
+  zoom_fov <- apply(centroid_data@coords[centroid_data@cells %in% cells_of_interest,], 2, range)
+  
+  xy_ratio = (max(zoom_fov[,1]) - min(zoom_fov[,1]))/(max(zoom_fov[,2]) - 
+                  min(zoom_fov[,2]))
+  
+  # visualize FOV
+  p <- ImageDimPlot(seu.obj, fov = use_slide_image, axes = TRUE, size = 0.7,
+                     border.color = "black",
+                     border.size = 0.01,
+                     dark.background = F,
+                     group.by = "celltype",
+                     cols = palette,
+                     coord.fixed = T) +
+    theme_void() +
+    xlim(zoom_fov[, 2]) +
+    ylim(zoom_fov[, 1]) + coord_flip() + theme(aspect.ratio = 1/xy_ratio)
+  
+  return(p)
+}  
+```  
+
+Plot MP activity for area
+```{r}
+plot_mp_region <- function(seu.obj,
+                           patient_id="PatientA",
+                           condition="Wound",
+                           slide=1,
+                           col="red",
+                           cols=NULL,
+                           min.cutoff=0,
+                           max.cutoff=0.3,
+                           mp="MP7.WoundResp",
+                           celltype="Cancer.cells") {
+  
+  use_slide_metadata <- unique(seu.obj@meta.data$Run_Tissue_name.x)[slide] 
+  use_slide_image <- Images(seu.obj)[slide]
+  
+  cells_of_interest <- seu.obj$id[(seu.obj$Patient_ID == patient_id) & 
+                                    (seu.obj$Run_Tissue_name == use_slide_metadata) &
+                                    (seu.obj$Condition == condition)] 
+  centroid_data <- seu.obj@images[[use_slide_image]]$centroids 
+  zoom_fov <- apply(centroid_data@coords[centroid_data@cells %in% cells_of_interest,], 2, range)
+  
+  Idents(seu.obj) <- "celltype"
+  if(is.na(celltype)) {
+    cells.plot <- colnames(seu.obj)
+  } else {
+    cells.plot = WhichCells(seu.obj, idents = celltype)
+  }
+  
+  xy_ratio = (max(zoom_fov[,1]) - min(zoom_fov[,1]))/(max(zoom_fov[,2]) - 
+                  min(zoom_fov[,2]))
+  
+  if (is.null(cols)) {
+    cols = c("white",col)
+  }
+  
+  a <- ImageFeaturePlot(seu.obj,
+                        fov = use_slide_image,
+                        features = mp,
+                        cells = cells.plot,
+                        border.color = "black",
+                        cols = cols,
+                        border.size = 0.01,
+                        dark.background = F,
+                        coord.fixed = T,
+                        min.cutoff = min.cutoff, max.cutoff = max.cutoff) +
+  xlim(zoom_fov[, 2]) + ylim(zoom_fov[, 1]) + coord_flip() + theme(aspect.ratio = 1/xy_ratio)
+  return(a)
+  
+}
+
+```
+
+
+Read in cancer MP signatures, and fibroblast signatures
+```{r}
+mp_file <- "_aux/TableS2_MPs_filtered.csv"
+
+mps <- read.csv(mp_file)
+mps <- as.list(mps)
+
+#We can only evaluate genes in the CosMx panel
+panel <- rownames(seu.obj)
+
+mps <- lapply(mps, function(x) {
+  x[x %in% panel]
+})
+
+fb_file <- "_aux/TableS3_wrCAFsignatures.csv"
+
+fb <- read.csv(fb_file)
+fb <- as.list(fb)
+fb <- lapply(fb, function(x) {
+  x[x %in% panel]
+})
+
+```
+
+Score meta-programs
+```{r}
+library(UCell)
+seu.obj <- AddModuleScore_UCell(seu.obj, features=c(mps, fb), name="", ncores=8, maxRank = 200)
+
+seu.obj$`CAF_wound-unwound` <- seu.obj$CAF_wound - seu.obj$CAF_unwound.baseline
+```
+
+```{r}
+# Set your desired image and FOV 
+
+use_fov <- 1 # FOV desired 
+use_slide_metadata <- unique(seu.obj@meta.data$Run_Tissue_name.x)[1] # Slide desired, as named in the metadata column ‘Run_Tissue_name’ 
+use_slide_image <- Images(seu.obj)[1] # Slide desired, as named in images 
+
+
+cells_of_interest <- seu.obj$id[(seu.obj$fov == use_fov) & ( seu.obj$Run_Tissue_name.x == use_slide_metadata)] 
+centroid_data <- seu.obj@images[[use_slide_image]]$centroids 
+zoom_fov <- apply(centroid_data@coords[centroid_data@cells %in% cells_of_interest,], 2, range)
+
+title <- make_title(seu.obj, cells_of_interest)
+
+# visualize FOV
+p1 <- ImageDimPlot(seu.obj, fov = use_slide_image, axes = TRUE, size = 0.7,
+                   border.color = "black",
+                   border.size = 0.1,
+                   dark.background = F,
+                   group.by = "celltype",
+                   cols = palette2,
+                   flip_xy = FALSE,
+                   coord.fixed = TRUE) +
+  theme_void() + theme(aspect.ratio = 1) +
+  xlim(zoom_fov[, 2]) +
+  ylim(zoom_fov[, 1]) + ggtitle(title)
+p1
+```
+
+Visualize FOVs for whole patient
+```{r fig.height=12, fig.width=8}
+
+p1 <- plot_celltype_region(seu.obj, patient_id = "PatientA",
+                           condition = "Ulcerated_nodular", slide=1,
+                           palette=palette2)
+p1 + ggtitle("PatientA")
+ggsave("plots/PatientA_slide1_allFOVs.pdf", plot=p1, height=12, width=10)
+
+p1 <- plot_celltype_region(seu.obj, patient_id = "PatientB",
+                           condition = "Ulcerated_nodular", slide=2,
+                           palette=palette2)
+p1 + ggtitle("PatientB")
+ggsave("plots/PatientB_slide2_allFOVs.pdf", plot=p1, height=12, width=10)
+
+```
+
+MP activity for same slide
+```{r fig.height=12, fig.width=8}
+cols <- c("red","forestgreen","blue","deeppink","darkcyan","orange","darkmagenta")
+
+a <- plot_mp_region(seu.obj, patient_id = "PatientB", condition = "Ulcerated_nodular",
+                    slide = 2, mp="MP7.WoundResp", col = cols[7], celltype="Cancer.cells")
+
+a + ggtitle("PatientB")
+ggsave("plots/PatientB_slide2_allFOVs_MP7.pdf", plot=a, height=12, width=8)
+
+
+b <- plot_mp_region(seu.obj, patient_id = "PatientB", condition = "Ulcerated_nodular",
+                    slide = 2, mp="MP2.RadMig", col = cols[2],  celltype="Cancer.cells")
+
+b + ggtitle("PatientB")
+ggsave("plots/PatientB_slide2_allFOVs_MP2.pdf", plot=b, height=12, width=8)
+```
+
+#Loop over all patients and MPs
+```{r eval=F}
+pats <- unique(seu.obj$Patient_ID)
+mp.use <- names(mps)
+#fb.use <- names(fb)
+fb.use <- NULL
+
+cols <- c("red","forestgreen","blue","deeppink","darkcyan","orange","darkmagenta")
+names(cols) <- mp.use
+
+for (p in pats) {
+  if (p %in% c("PatientA","PatientC")) {
+    slide = 1
+  } else {
+    slide = 2
+  }
+  meta <- seu.obj@meta.data[seu.obj$Patient_ID==p,]
+  conds <- unique(meta$Condition)
+  for (cc in conds) {
+    p1 <- plot_celltype_region(seu.obj, patient_id = p,
+                           condition = cc, slide=slide,
+                           palette=palette2)
+    fname <- sprintf("plots/%s_%s_allFOVs.pdf", p, cc)
+    ggsave(fname, plot=p1, height=12, width=10)
+    
+    for (mm in mp.use) {
+      p2 <- plot_mp_region(seu.obj, patient_id = p, condition = cc,
+                           col = cols[mm],
+                    slide = slide, mp=mm, celltype="Cancer.cells")
+      
+      fname <- sprintf("plots/%s_%s_allFOVs_%s.pdf", p, cc, mm)
+      ggsave(fname, plot=p2, height=12, width=10)
+    }
+    for (mm in fb.use) {
+      p2 <- plot_mp_region(seu.obj, patient_id = p, condition = cc,
+                    slide = slide, mp=mm, celltype="Fibroblast")
+      
+      fname <- sprintf("plots/%s_%s_allFOVs_%s.pdf", p, cc, mm)
+      ggsave(fname, plot=p2, height=12, width=10)
+    }
+  }
+}
+
+```
+
+And for wound-responding CAF signature
+```{r eval=F}
+sig.name <- "CAF_wound-unwound"
+pats <- unique(seu.obj$Patient_ID)
+
+hist(seu.obj$`CAF_wound-unwound`, breaks=100)
+
+for (p in pats) {
+  if (p %in% c("PatientA","PatientC")) {
+    slide = 1
+  } else {
+    slide = 2
+  }
+  meta <- seu.obj@meta.data[seu.obj$Patient_ID==p,]
+  conds <- unique(meta$Condition)
+  for (cc in conds) {
+    p2 <- plot_mp_region(seu.obj, patient_id = p, condition = cc, col = "darkred",
+                         min.cutoff = -0.3, max.cutoff = 0.3,
+                         slide = slide, mp=sig.name, celltype="Fibroblast")
+    p2 <- p2 + scale_fill_gradient2(low="darkblue",mid="white",high="darkred")
+    fname <- sprintf("plots/%s_%s_allFOVs_%s.pdf", p, cc, sig.name)
+    ggsave(fname, plot=p2, height=12, width=10)
+  }
+}
+```
+
+
+Activity for whole area (Patient C)
+```{r fig.height=4, fig.width=10}
+a <- plot_mp_region(seu.obj, patient_id = "PatientC", condition = "Wound",
+                    slide = 1, mp="MP7.WoundResp", celltype="Cancer.cells")
+ggsave("plots/PatientC_wound_allFOVs_MP7.pdf", plot = a, height=15, width=12)
+
+
+b <- plot_mp_region(seu.obj, patient_id = "PatientC", condition = "Wound",
+                    slide = 1, mp="CAF_wound", celltype="Fibroblast")
+ggsave("plots/PatientC_wound_allFOVs_wCAF.pdf", plot=b, height=15, width=12)
+
+```
+
+Activity for whole area (Patient D)
+```{r fig.height=4, fig.width=10}
+a <- plot_mp_region(seu.obj, patient_id = "PatientD", condition = "Wound",
+                    slide = 2, mp="MP7.WoundResp", celltype="Cancer.cells")
+ggsave("plots/PatientD_wound_allFOVs_MP7.pdf", plot = a, height=15, width=12)
+
+
+b <- plot_mp_region(seu.obj, patient_id = "PatientD", condition = "Wound",
+                    slide = 2, mp="CAF_wound", celltype="Fibroblast")
+ggsave("plots/PatientD_wound_allFOVs_wCAF.pdf", plot=b, height=15, width=12)
+
+```
+
+
+# MP activity for individual FOVs
+Make faster by plotting full, and then subsetting plot on each FOV
+```{r eval=F}
+cols <- c("red","forestgreen","blue","deeppink","darkcyan","orange","darkmagenta")
+
+quants <- sapply(names(mps), function(mp) {
+  quantile(seu.obj@meta.data[,mp], probs = 0.99)
+})
+midpoints <- sapply(names(mps), function(mp) {
+  quantile(seu.obj@meta.data[,mp], probs = 0.5)
+})
+
+
+dir.create("plots/MPs_allFOVs")
+
+for (use_slide_metadata in unique(seu.obj$Run_Tissue_name.x)) {
+  
+  pat <- gsub("\\S+(Patient\\d+)", replacement = "\\1", x = use_slide_metadata, perl=T)
+  use_slide_image <- grep(pattern = pat, x = Images(seu.obj), value=T)
+  
+  #make broad plot first
+  pll_area <- lapply(seq_along(mps), function(i) {
+     ImageFeaturePlot(seu.obj,
+                      fov = use_slide_image,
+                      features = names(mps)[i],
+                      cells = WhichCells(seu.obj, idents = c("Cancer.cells")),
+                      border.color = "black",
+                      cols = c("white",cols[i]),
+                      border.size = 0.1,
+                      dark.background = F,
+                      min.cutoff = 0, max.cutoff = quants[i])
+   })
+  names(pll_area) <- names(mps)
+  
+  #then focus on individual FOVs
+  for (use_fov in unique(seu.obj$fov)) {
+    
+    cells_of_interest <- seu.obj$id[(seu.obj$fov == use_fov) & ( seu.obj$Run_Tissue_name.x == use_slide_metadata)] 
+    centroid_data <- seu.obj@images[[use_slide_image]]$centroids 
+    zoom_fov <- apply(centroid_data@coords[centroid_data@cells %in% cells_of_interest,], 2, range)
+    
+    title <- make_title(seu.obj, cells_of_interest)
+    
+    
+    Idents(seu.obj) <- "celltype"
+    
+    pll <- lapply(seq_along(mps), function(i) {
+      pll_area[[i]] + xlim(zoom_fov[, 2]) + ylim(zoom_fov[, 1]) +
+        theme(aspect.ratio = 1) + ggtitle(title) + coord_flip()
+    })
+    p <- wrap_plots(pll, ncol=4)
+    
+    ggsave(sprintf("plots/MPs_allFOVs/cosmx_allMPs_%s_fov%i.pdf", use_slide_metadata, use_fov), plot = p, height=8, width=20)
+  }
+}
+```

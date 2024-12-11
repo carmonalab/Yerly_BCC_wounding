@@ -1,0 +1,243 @@
+---
+title: "Analysis of cell type composition in CosMx SMI"
+Author: "Massimo Andreatta"
+date: "2024-06-18"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+This workbook analyses cell type composition in a CosMx SMI dataset of human BCC. 
+
+Conditions: - nodular vs. infiltrative FOVs in nodular-ulcerated samples (locally containing both nodular and infiltrative areas)
+            - baseline (day 0) vs. wounded (day7 at same site) vs. unwounded (day7 at adjacent site)
+
+
+```{r}
+library(Seurat)
+library(sf)
+library(ggplot2)
+library(future)
+library(ggpubr)
+library(RColorBrewer)
+plan("sequential")
+```
+
+#Read in pre-processed data
+
+Pre-process data first, for cell type annotation, with 1-celltype_insitutype.Rmd
+```{r}
+seu.obj <- readRDS("cache/cosmx_insitutype_anno.rds")
+seu.obj$annotation_broad <- seu.obj$celltype
+
+meta.names <- colnames(seu.obj[[]])
+meta.names <- gsub(".x$", "", meta.names, perl=T)
+colnames(seu.obj[[]]) <- meta.names
+```
+
+
+Include information for FOV distance from the wound
+```{r}
+seu.obj$Condition2 <- seu.obj$Condition
+ind <- which(!is.na(seu.obj$Dist_from_wound))
+seu.obj$Condition2[ind] <- paste(seu.obj$Condition[ind], seu.obj$Dist_from_wound[ind], sep="_")
+table(seu.obj$Condition2)
+```
+
+Read in cancer MP signatures
+```{r}
+mp_file <- "_aux/TableS2_MPs_filtered.csv"
+
+mps <- read.csv(mp_file)
+mps <- as.list(mps)
+
+#We can only evaluate genes in the CosMx panel
+panel <- rownames(seu.obj)
+
+mps <- lapply(mps, function(x) {
+  x[x %in% panel]
+})
+```
+
+Score meta-programs
+```{r}
+library(UCell)
+seu.obj <- AddModuleScore_UCell(seu.obj, features=mps, name="", ncores=8, maxRank = 200)
+```
+
+
+Define color palette for plotting
+```{r}
+seu.obj$celltype <- droplevels(seu.obj$celltype)
+palette2 <- seu.obj@misc$palette[levels(seu.obj$celltype)]
+```
+
+Calculate cell type frequencies by FOV, and log-ratio vs. cancer cell frequency
+```{r}
+tab <- table(seu.obj$pat_fov, seu.obj$celltype)
+
+freq <- apply(tab, 1, function(x) {x/sum(x)})
+logfreq <- apply(tab, 1, function(x) {
+  l <- log(x+1)
+  l/sum(l)
+})
+
+ref = "Cancer.cells"
+logratio <- apply(tab, 1, function(x) {
+  v <- (1+x)/sum(x+1)
+  v <- log2(v/v[ref])
+  v[names(v) != ref]
+})
+
+```
+
+```{r}
+library(dplyr)
+
+freq.m <- reshape2::melt(freq)
+colnames(freq.m) <- c("Celltype","pat_fov","value")
+
+cols <- c("pat_fov","Patient_ID","Area_ID","Condition","Condition2","Ulcerated_area","Dist_from_wound","Morphology")
+
+freq.m <- merge(x = freq.m , y = seu.obj@meta.data[,cols],
+                     by = "pat_fov") |> distinct()
+
+log.m <- reshape2::melt(logfreq)
+colnames(log.m) <- c("Celltype","pat_fov","value")
+
+log.m <- merge(x = log.m , y = seu.obj@meta.data[,cols],
+                     by = "pat_fov") |> distinct()
+
+
+lograt.m <- reshape2::melt(logratio)
+colnames(lograt.m) <- c("Celltype","pat_fov","value")
+
+lograt.m <- merge(x = lograt.m , y = seu.obj@meta.data[,cols],
+                     by = "pat_fov") |> distinct()
+
+```
+
+
+
+1. Compositional differences between nodular and infiltrative FOVs
+
+```{r fig.height=6, fig.width=9}
+which.celltypes <- c("MoMacDC","Neutrophil","Tcell","Bcell","PlasmaCell","Mast","Pericyte","Fibroblast","Endothelial","Melanocyte")
+
+this <- freq.m[freq.m$Condition == "Ulcerated_nodular" & freq.m$Morphology %in% c("Infiltrative","Nodular"),]
+
+ggplot(this, aes(x=Celltype, y=value, fill=Morphology)) + geom_boxplot(position="dodge2",outlier.shape = NA) +
+  geom_point(aes(fill = Morphology), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) +
+  theme_classic2() + ggtitle("Frequencies") +
+  theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+  scale_fill_manual(values=c("#F44400","#FFFF6C")) +
+  stat_compare_means(label="p.format", size=2)
+ggsave("plots/freqs_celltypes_Nod_vs_Inf.pdf", height=4, width=7)
+
+this <- lograt.m[lograt.m$Condition == "Ulcerated_nodular" & lograt.m$Morphology %in% c("Infiltrative","Nodular"),]
+this <- this[this$Celltype %in% which.celltypes,]
+this$Celltype <- factor(this$Celltype, levels=which.celltypes)
+
+#extend ylim
+ylim1 <- min(this$value)
+ylim2 <- max(this$value)
+
+ggplot(this, aes(x=Celltype, y=value, fill=Morphology)) + geom_boxplot(position="dodge2",outlier.shape = NA) +
+  geom_point(aes(fill = Morphology), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) +
+  theme_classic2() + ggtitle("Log-ratio vs. Cancer cells") +
+  theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+  scale_fill_manual(values=c("#F44400","#FFFF6C")) +
+  ylim(ylim1, ylim2+2) +
+  stat_compare_means(label="p.format", size=2)
+
+ggsave("plots/logratios_celltypes_Nod_vs_Inf.pdf", height=4, width=7)
+```
+
+
+2. Compositional differences between baseline vs. wounded vs. unwounded samples
+
+```{r fig.height=8, fig.width=12}
+my_comparisons <- list(c("Baseline", "Wound"))
+which.celltypes <- c("MoMacDC","Neutrophil","Tcell","Bcell","PlasmaCell","Mast","Pericyte","Fibroblast","Endothelial","Melanocyte")
+
+this <- freq.m[freq.m$Condition %in% c("Baseline","Unwound","Wound"),]
+#extend ylim
+ylim1 <- min(this$value)
+ylim2 <- max(this$value)
+
+ggplot(this, aes(x=Condition, y=value, fill=Condition)) + geom_boxplot(position="dodge2", outlier.shape = NA) +
+  geom_point(aes(fill = Condition), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) +
+  theme_classic2() + ggtitle("Frequencies") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+  scale_fill_manual(values=c("#07f495","#f4ec07","#f44007")) +
+  ylim(ylim1,ylim2+0.1) +
+  facet_wrap(~Celltype, ncol = 7) +
+  stat_compare_means(comparisons = my_comparisons)
+
+ggsave("plots/freqs_celltypes_wounded.pdf", height=7.5, width=10)
+
+
+this <- lograt.m[lograt.m$Condition %in% c("Baseline","Unwound","Wound"),]
+this <- this[this$Celltype %in% which.celltypes,]
+this$Celltype <- factor(this$Celltype, levels=which.celltypes)
+#extend ylim
+ylim1 <- min(this$value)
+ylim2 <- max(this$value)
+
+ggplot(this, aes(x=Condition, y=value, fill=Condition)) + geom_boxplot(position="dodge2", outlier.shape = NA) +
+  geom_point(aes(fill = Condition), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) +
+  theme_classic2() + ggtitle("Log-ratios") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+  scale_fill_manual(values=c("#07f495","#f4ec07","#f44007")) +
+  ylim(ylim1,ylim2+1) +
+  facet_wrap(~Celltype, ncol = 5) +
+  stat_compare_means(comparisons = my_comparisons)
+ggsave("plots/logratios_celltypes_wounded.pdf", height=7.5, width=8)
+
+```
+
+
+2b. Compositional differences between baseline vs. unwounded samples vs. wounded samples (close and far from wound)
+```{r fig.height=8, fig.width=12}
+my_comparisons <- list(c("Baseline", "Wound_Far"), c("Baseline", "Wound_Close"))
+which.celltypes <- c("MoMacDC","Neutrophil","Tcell","Bcell","PlasmaCell","Mast","Pericyte","Fibroblast","Endothelial","Melanocyte")
+
+this <- freq.m[freq.m$Condition %in% c("Baseline","Unwound","Wound"),]
+this$Condition2 <- factor(this$Condition2, levels=c("Baseline","Unwound","Wound_Far","Wound_Close"))
+
+#extend ylim
+ylim1 <- min(this$value)
+ylim2 <- max(this$value)
+
+ggplot(this, aes(x=Condition2, y=value, fill=Condition2)) + geom_boxplot(position="dodge2", outlier.shape = NA) +
+  geom_point(aes(fill = Condition2), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) +
+  theme_classic2() + ggtitle("Frequencies") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+  scale_fill_manual(values=c("#07f495","#f4ec07","orange","#f44007")) +
+  ylim(ylim1,ylim2+0.3) +
+  facet_wrap(~Celltype, ncol = 7) +
+  stat_compare_means(comparisons = my_comparisons, label="p.format", size=3)
+
+ggsave("plots/freqs_celltypes_wounded_dist.pdf", height=7.5, width=10)
+```
+Log-ratios
+```{r fig.width=14, fig.height=4}
+this <- lograt.m[lograt.m$Condition %in% c("Baseline","Unwound","Wound"),]
+this <- this[this$Celltype %in% which.celltypes,]
+this$Celltype <- factor(this$Celltype, levels=which.celltypes)
+this$Condition2 <- factor(this$Condition2, levels=c("Baseline","Unwound","Wound_Far","Wound_Close"))
+
+#extend ylim
+ylim1 <- min(this$value)
+ylim2 <- max(this$value)
+
+ggplot(this, aes(x=Condition2, y=value, fill=Condition2)) + geom_boxplot(position="dodge2", outlier.shape = NA) +
+  geom_point(aes(fill = Condition2), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) +
+  theme_classic2() + ggtitle("Log-ratios") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+  scale_fill_manual(values=c("#07f495","#f4ec07","orange","#f44007")) +
+  ylim(ylim1,ylim2+3) +
+  facet_wrap(~Celltype, ncol = 13) +
+  stat_compare_means(comparisons = my_comparisons, label="p.format", size=3)
+ggsave("plots/logratios_celltypes_wounded_dist.pdf", height=4, width=14)
+```

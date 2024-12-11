@@ -1,0 +1,349 @@
+---
+title: "Meta-program activity in CosMx SMI BCC dataset"
+Author: "Massimo Andreatta"
+date: "2024-06-18"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+Analyze MP activity and CAF signature scores in CosMx FOVs from different conditions.
+
+Conditions: - nodular vs. infiltrative FOVs in nodular-ulcerated samples (locally containing both nodular and infiltrative areas)
+            - baseline (day 0) vs. wounded (day7 at same site) vs. unwounded (day7 at adjacent site)
+
+
+```{r}
+library(Seurat)
+library(sf)
+library(ggplot2)
+library(future)
+library(RColorBrewer)
+plan("sequential")
+```
+
+#Read in pre-processed data
+
+Pre-process data first, for cell type annotation, with 1-celltype_insitutype.Rmd
+```{r}
+seu.obj <- readRDS("cache/cosmx_insitutype_anno.rds")
+palette2 <- seu.obj@misc$palette
+
+meta.names <- colnames(seu.obj[[]])
+meta.names <- gsub(".x$", "", meta.names, perl=T)
+colnames(seu.obj[[]]) <- meta.names
+```
+
+
+Include information for FOV distance from the wound
+```{r}
+seu.obj$Condition2 <- seu.obj$Condition
+ind <- which(!is.na(seu.obj$Dist_from_wound))
+seu.obj$Condition2[ind] <- paste(seu.obj$Condition[ind], seu.obj$Dist_from_wound[ind], sep="_")
+table(seu.obj$Condition2)
+```
+
+Read in cancer MP signatures, and fibroblast signatures
+```{r}
+mp_file <- "_aux/TableS2_MPs_filtered.csv"
+
+mps <- read.csv(mp_file)
+mps <- as.list(mps)
+
+#We can only evaluate genes in the CosMx panel
+panel <- rownames(seu.obj)
+
+mps <- lapply(mps, function(x) {
+  x[x %in% panel]
+})
+
+fb_file <- "_aux/TableS3_wrCAFsignatures.csv"
+
+fb <- read.csv(fb_file)
+fb <- as.list(fb)
+fb <- lapply(fb, function(x) {
+  x[x %in% panel]
+})
+
+```
+
+Score meta-programs
+```{r}
+library(UCell)
+seu.obj <- AddModuleScore_UCell(seu.obj, features=c(mps, fb), name="", ncores=8, maxRank = 200)
+```
+
+Also calculate differential signatures: MP7 minus MP2, and CAF_wound minus CAF_unwound
+```{r}
+seu.obj$`MP7-MP2` <- seu.obj$MP7.WoundResp - seu.obj$MP2.RadMig
+seu.obj$`CAF_wound-unwound` <- seu.obj$CAF_wound - seu.obj$CAF_unwound.baseline
+```
+
+# Differences in nodular vs. infiltrative FOVs (ulcerated-nodular samples)
+Analyze MP activity in CosMx FOVs from nodular vs. infiltrative FOVs
+
+```{r}
+sub <- subset(seu.obj, subset = Condition == "Ulcerated_nodular")
+sub <- subset(sub, subset = Morphology %in% c("Nodular","Infiltrative"))
+
+cancer <- subset(sub, subset = celltype == "Cancer.cells")
+fibro <- subset(sub, subset = celltype == "Fibroblast")
+```
+
+Average by FOV (cancer cells)
+```{r}
+library(ggpubr)
+min.cells <- 200
+
+means <- aggregate(cancer@meta.data[, names(mps)], list(fov = cancer$pat_fov, morph = cancer$Morphology), mean)
+npoints <- aggregate(cancer@meta.data[, 1], list(fov = cancer$pat_fov, morph = cancer$Morphology), length)
+
+means <- means[npoints$x > min.cells, ]
+
+melt <- reshape2::melt(means)
+colnames(melt) <- c("fov", "Morphology", "Metaprogram", "Average_UCell_score_by_FOV")
+
+p1 <- ggplot(melt, aes(x=Metaprogram, y=Average_UCell_score_by_FOV, fill=Morphology)) + 
+  geom_boxplot() + theme_classic2() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("Cancer morphology") +
+  scale_fill_manual(values=c("#F44400","#FFFF6C"))  +
+  stat_compare_means(label="p.format")
+p1 
+
+ggsave("plots/MP_score_by_fov_morphology.pdf", height=4, width=5.3)
+```
+
+
+Split by patient and facet by MP
+```{r fig.width=11, fig.height=4}
+min.cells <- 200
+
+means <- aggregate(cancer@meta.data[, names(mps)], list(fov = cancer$pat_fov,
+                                                        morph = cancer$Morphology,
+                                                        pat = cancer$Patient_ID),
+                   mean)
+npoints <- aggregate(cancer@meta.data[, 1], list(fov = cancer$pat_fov, morph = cancer$Morphology), length)
+
+means <- means[npoints$x > min.cells, ]
+
+melt <- reshape2::melt(means)
+colnames(melt) <- c("fov", "Morphology", "Patient", "Metaprogram", "Average_UCell_score_by_FOV")
+
+p <- ggplot(melt, aes(x=Patient, y=Average_UCell_score_by_FOV, fill=Morphology)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(fill = Morphology), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) +
+  theme_classic2() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ylim(c(0,0.17)) +
+  ggtitle("Morphology") +
+  facet_wrap(~Metaprogram, ncol = 7) +
+  scale_fill_manual(values=c("#F44400","#FFFF6C"))  +
+  stat_compare_means(label="p.format", size=3)
+p
+
+ggsave("plots/MPs_by_nodinf_faceted.pdf", height=4, width = 11)
+
+```
+
+
+# Differences in wounded vs. unwounded vs. baseline
+
+Analyze MP activity and CAF signature scores in CosMx FOVs from different conditions:
+* baseline (day 0)
+* wounded (day7 at same site)
+* unwounded (day7 at adjacent site)
+
+```{r}
+sub <- subset(seu.obj, subset = Condition %in% c("Baseline","Wound","Unwound"))
+
+cancer <- subset(sub, subset = celltype == "Cancer.cells")
+fibro <- subset(sub, subset = celltype == "Fibroblast")
+```
+
+
+On cancer cells, calculate average MP activity by FOV
+```{r fig.height=4, fig.width=9}
+min.cells <- 200
+
+my_comparisons <- list(c("Baseline", "Wound"),c("Unwound","Wound"))
+
+means <- aggregate(cancer@meta.data[, names(mps)], list(fov = cancer$pat_fov, cond = cancer$Condition), mean)
+npoints <- aggregate(cancer@meta.data[, 1], list(fov = cancer$pat_fov, cond = cancer$Condition), length)
+
+means <- means[npoints$x > min.cells, ]
+
+melt <- reshape2::melt(means)
+colnames(melt) <- c("fov", "Condition", "Metaprogram", "Average_UCell_score_by_FOV")
+
+p3 <- ggplot(melt, aes(x=Condition, y=Average_UCell_score_by_FOV, fill=Condition)) + 
+  geom_boxplot(outlier.shape = NA) + theme_classic2() +
+  geom_point(aes(fill = Condition), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("MP activity (cancer cells)") +
+  scale_fill_manual(values=c("#07f495","#f4ec07","#f44007")) +
+  facet_wrap(~Metaprogram, ncol = 7) +
+  stat_compare_means(comparisons = my_comparisons, size=3)
+  
+p3
+```
+
+Include the annotation for "close" vs. "far" from wound
+```{r fig.width=12, fig.height=5}
+min.cells <- 200
+
+my_comparisons <- list(c("Baseline","Wound_Close"),c("Unwound","Wound_Close"))
+
+means <- aggregate(cancer@meta.data[, names(mps)], list(fov = cancer$pat_fov, cond = cancer$Condition2), mean)
+npoints <- aggregate(cancer@meta.data[, 1], list(fov = cancer$pat_fov, cond = cancer$Condition2), length)
+
+means <- means[npoints$x > min.cells, ]
+
+melt <- reshape2::melt(means)
+colnames(melt) <- c("fov", "Condition2", "Metaprogram", "Average_UCell_score_by_FOV")
+melt$Condition2 <- factor(melt$Condition2, levels=c("Baseline","Unwound","Wound_Far","Wound_Close"))
+
+p3.1 <- ggplot(melt, aes(x=Condition2, y=Average_UCell_score_by_FOV, fill=Condition2)) + 
+  geom_boxplot(outlier.shape = NA) + theme_classic2() +
+  geom_point(aes(fill = Condition2), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("MP activity (cancer cells)") +
+  scale_fill_manual(values=c("#07f495","#f4ec07","orange","#f44007")) +
+  facet_wrap(~Metaprogram, ncol = 7) +
+  stat_compare_means(comparisons = my_comparisons, size=3)
+p3.1
+ggsave("plots/MP_score_by_fov_wounding_dist.pdf", height=5, width=12)
+```
+
+
+On CAFs, calculate average signature activity by FOV
+```{r}
+min.cells <- 50
+
+my_comparisons <- list(c("Baseline", "Wound"),c("Unwound","Wound"))
+
+means <- aggregate(fibro@meta.data[, names(fb)], list(fov = fibro$pat_fov, cond = fibro$Condition), mean)
+npoints <- aggregate(fibro@meta.data[, 1], list(fov = fibro$pat_fov, cond = fibro$Condition), length)
+
+means <- means[npoints$x > min.cells, ]
+
+melt <- reshape2::melt(means)
+colnames(melt) <- c("fov", "Condition", "CAF_signature", "Average_UCell_score_by_FOV")
+
+p4 <- ggplot(melt, aes(x=Condition, y=Average_UCell_score_by_FOV, fill=Condition)) + 
+  geom_boxplot() + theme_classic2() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("Fibroblasts (wounding)") +
+  scale_fill_manual(values=c("#07f495","#f4ec07","#f44007")) +
+  facet_wrap(~CAF_signature, ncol = 2) +
+  stat_compare_means(comparisons = my_comparisons, size=3)
+  
+p4
+```
+
+Include the annotation for "close" vs. "far" from wound
+```{r}
+min.cells <- 50
+
+my_comparisons <- list(c("Baseline","Wound_Close"),c("Unwound","Wound_Close"),c("Wound_Far", "Baseline"))
+
+means <- aggregate(fibro@meta.data[, names(fb)], list(fov = fibro$pat_fov, cond = fibro$Condition2), mean)
+npoints <- aggregate(fibro@meta.data[, 1], list(fov = fibro$pat_fov, cond = fibro$Condition2), length)
+
+means <- means[npoints$x > min.cells, ]
+
+melt <- reshape2::melt(means)
+colnames(melt) <- c("fov", "Condition2", "CAF_signature", "Average_UCell_score_by_FOV")
+melt$Condition2 <- factor(melt$Condition2, levels=c("Baseline","Unwound","Wound_Far","Wound_Close"))
+
+p4.1 <- ggplot(melt, aes(x=Condition2, y=Average_UCell_score_by_FOV, fill=Condition2)) + 
+  geom_boxplot() + theme_classic2() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("Fibroblasts (wounding)") +
+  scale_fill_manual(values=c("#07f495","#f4ec07","orange","#f44007")) +
+  facet_wrap(~CAF_signature, ncol = 2) +
+  stat_compare_means(comparisons = my_comparisons, size=3)
+p4.1
+
+ggsave("plots/CAF_score_by_fov_wounding_dist.pdf", height=4.5, width=6.2)
+```
+
+
+
+MP7 - MP2
+```{r}
+min.cells <- 200
+
+means <- aggregate(cancer@meta.data[, "MP7-MP2"], list(fov = cancer$pat_fov, cond = cancer$Condition2), mean)
+npoints <- aggregate(cancer@meta.data[, 1], list(fov = cancer$pat_fov, cond = cancer$Condition2), length)
+colnames(means) <- c("fov","cond","MP7-MP2")
+means <- means[npoints$x > min.cells, ]
+
+melt <- reshape2::melt(means)
+colnames(melt) <- c("fov", "Condition", "Metaprogram", "Average_UCell_score_by_FOV")
+melt$Condition <- factor(melt$Condition, levels=c("Baseline","Unwound","Wound_Far","Wound_Close"))
+
+pA <- ggplot(melt, aes(x=Metaprogram, y=Average_UCell_score_by_FOV, fill=Condition)) + 
+  geom_boxplot() +
+  theme_classic2() +
+  theme(axis.title.x = element_blank()) +
+  ggtitle("Cancer cells (wounding)") +
+  scale_fill_manual(values=c("#07f495","#f4ec07","orange","#f44007"))
+pA
+ggsave("plots/MP_score_by_fov_MP7-MP2.pdf", height=4, width=5.3)
+```
+
+CAF differential signature score
+```{r fig.height=4, fig.width=4}
+min.cells <- 50
+my_comparisons <- list(c("Baseline","Wound_Close"),c("Unwound","Wound_Close"),c("Wound_Far", "Unwound"))
+
+means <- aggregate(fibro@meta.data[, "CAF_wound-unwound"], list(fov = fibro$pat_fov, cond = fibro$Condition2), mean)
+npoints <- aggregate(fibro@meta.data[, 1], list(fov = fibro$pat_fov, cond = fibro$Condition2), length)
+colnames(means) <- c("fov","cond","CAF_wound-unwound")
+
+means <- means[npoints$x > min.cells, ]
+
+melt <- reshape2::melt(means)
+colnames(melt) <- c("fov", "Condition", "CAF_signature", "Average_UCell_score_by_FOV")
+melt$Condition <- factor(melt$Condition, levels=c("Baseline","Unwound","Wound_Far","Wound_Close"))
+
+pB <- ggplot(melt, aes(x=Condition, y=Average_UCell_score_by_FOV, fill=Condition)) + 
+  geom_boxplot(outlier.shape = NA) + theme_classic2() +
+  geom_point(aes(fill = Condition), size = 1.5, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) + 
+  ggtitle("Fibroblasts (wounding)") +
+  scale_fill_manual(values=c("#07f495","#f4ec07","orange","#f44007")) +
+  stat_compare_means(comparisons = my_comparisons, size=3) +
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1), axis.title.x = element_blank())
+pB
+
+ggsave("plots/CAF_score_by_fov_Wound-Unwound.pdf", height=4, width=4)
+```
+
+
+Individual genes in CAF signatures
+CAF score
+```{r}
+min.cells <- 50
+
+mat <- LayerData(fibro, layer="data")
+matsub <- as.matrix(mat[fb$CAF_wound,])
+
+means <- aggregate(t(matsub), list(fov = fibro$pat_fov, cond = fibro$Condition2), mean)
+npoints <- aggregate(fibro@meta.data[, 1], list(fov = fibro$pat_fov, cond = fibro$Condition2), length)
+
+means <- means[npoints$x > min.cells, ]
+
+melt <- reshape2::melt(means)
+colnames(melt) <- c("fov", "Condition", "Gene", "Avg_expression")
+melt$Condition <- factor(melt$Condition, levels=c("Baseline","Unwound","Wound_Far","Wound_Close"))
+
+ggplot(melt, aes(x=Gene, y=Avg_expression, fill=Condition)) + 
+  geom_boxplot() + theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("Fibroblasts (wounding)") +
+  scale_fill_manual(values=c("#07f495","#f4ec07","orange","#f44007"))
+
+ggsave("plots/Fibro_genes_bywounding.pdf", height=4, width=7.5)
+```
+

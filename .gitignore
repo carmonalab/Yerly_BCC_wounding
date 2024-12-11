@@ -6,3 +6,5 @@
 */plots/
 */cache/
 */*.rds
+.Rprofile
+*/.Rprofile

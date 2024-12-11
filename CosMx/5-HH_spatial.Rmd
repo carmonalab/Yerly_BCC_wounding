@@ -1,0 +1,266 @@
+---
+title: "BCC CosMx spatial analysis with relation to HH pathway activation"
+Author: "Massimo Andreatta"
+date: "2024-06-18"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+This workbook analyses the activation of hedgehog (HH) pathway genes in an in situ spatial transcriptomics dataset of BCC (CosMx SMI)
+
+```{r}
+library(Seurat)
+library(sf)
+library(ggplot2)
+library(future)
+library(RColorBrewer)
+plan("sequential")
+```
+
+#Read in pre-processed data
+
+Pre-process data first, for cell type annotation, with 1-celltype_insitutype.Rmd
+```{r}
+seu.obj <- readRDS("cache/cosmx_insitutype_anno.rds")
+palette2 <- seu.obj@misc$palette
+
+meta.names <- colnames(seu.obj[[]])
+meta.names <- gsub(".x$", "", meta.names, perl=T)
+colnames(seu.obj[[]]) <- meta.names
+```
+
+Include information for FOV distance from the wound
+```{r}
+seu.obj$Condition2 <- seu.obj$Condition
+ind <- which(!is.na(seu.obj$Dist_from_wound))
+seu.obj$Condition2[ind] <- paste(seu.obj$Condition[ind], seu.obj$Dist_from_wound[ind], sep="_")
+table(seu.obj$Condition2)
+```
+
+Helper functions
+```{r}
+make_title <- function(obj, cells_of_interest) {
+  pat <-  unique(obj@meta.data[cells_of_interest,"Patient_ID"])
+  cond <- unique(obj@meta.data[cells_of_interest,"Condition"])
+  area <- unique(obj@meta.data[cells_of_interest,"Area_ID"])
+  ulc <- unique(obj@meta.data[cells_of_interest,"Ulcerated_area"])
+  dist <- unique(obj@meta.data[cells_of_interest,"Dist_from_wound"])
+  dir <- unique(obj@meta.data[cells_of_interest,"Wound_direction"])
+  
+  if (is.na(ulc)) {
+    title <- sprintf("%s (%i) - %s", pat, use_fov, cond)
+  } else {
+    title <- sprintf("%s (%i) - %s", pat, use_fov, ulc)
+  }
+  if (!is.na(dist)) {
+    title <- sprintf("%s - %s", title, dist)
+  }
+  if (!is.na(dir)) {
+    title <- sprintf("%s - %s", title, dir)
+  }
+  return(title)
+}
+
+```
+
+Plot cell type for area
+```{r}
+plot_celltype_region <- function(seu.obj,
+                                 patient_id="PatientA",
+                                 condition="Wound",
+                                 slide=1,
+                                 celltype.metadata="celltype",
+                                 palette=NA) {
+  
+  use_slide_metadata <- unique(seu.obj@meta.data$Run_Tissue_name.x)[slide] 
+  use_slide_image <- Images(seu.obj)[slide] # Slide desired, as named in images 
+  
+  
+  cells_of_interest <- seu.obj$id[(seu.obj$Patient_ID == patient_id) &
+                                    (seu.obj$Condition %in% condition) &
+                                    ( seu.obj$Run_Tissue_name.x == use_slide_metadata)] 
+  centroid_data <- seu.obj@images[[use_slide_image]]$centroids 
+  zoom_fov <- apply(centroid_data@coords[centroid_data@cells %in% cells_of_interest,], 2, range)
+  
+  xy_ratio = (max(zoom_fov[,1]) - min(zoom_fov[,1]))/(max(zoom_fov[,2]) - 
+                  min(zoom_fov[,2]))
+  
+  # visualize FOV
+  p <- ImageDimPlot(seu.obj, fov = use_slide_image, axes = TRUE, size = 0.7,
+                     border.color = "black",
+                     border.size = 0.01,
+                     dark.background = F,
+                     group.by = "celltype",
+                     cols = palette,
+                     coord.fixed = T) +
+    theme_void() +
+    xlim(zoom_fov[, 2]) +
+    ylim(zoom_fov[, 1]) + coord_flip() + theme(aspect.ratio = 1/xy_ratio)
+  
+  return(p)
+}  
+```  
+
+Plot MP activity for area
+```{r}
+plot_mp_region <- function(seu.obj,
+                           patient_id="PatientA",
+                           condition="Wound",
+                           slide=1,
+                           col="red",
+                           cols=NULL,
+                           min.cutoff=0,
+                           max.cutoff=0.3,
+                           mp="MP7.WoundResp",
+                           celltype="Cancer.cells") {
+  
+  use_slide_metadata <- unique(seu.obj@meta.data$Run_Tissue_name.x)[slide] 
+  use_slide_image <- Images(seu.obj)[slide]
+  
+  cells_of_interest <- seu.obj$id[(seu.obj$Patient_ID == patient_id) & 
+                                    (seu.obj$Run_Tissue_name == use_slide_metadata) &
+                                    (seu.obj$Condition == condition)] 
+  centroid_data <- seu.obj@images[[use_slide_image]]$centroids 
+  zoom_fov <- apply(centroid_data@coords[centroid_data@cells %in% cells_of_interest,], 2, range)
+  
+  Idents(seu.obj) <- "celltype"
+  if(is.na(celltype)) {
+    cells.plot <- colnames(seu.obj)
+  } else {
+    cells.plot = WhichCells(seu.obj, idents = celltype)
+  }
+  
+  xy_ratio = (max(zoom_fov[,1]) - min(zoom_fov[,1]))/(max(zoom_fov[,2]) - 
+                  min(zoom_fov[,2]))
+  
+  if (is.null(cols)) {
+    cols = c("white",col)
+  }
+  
+  a <- ImageFeaturePlot(seu.obj,
+                        fov = use_slide_image,
+                        features = mp,
+                        cells = cells.plot,
+                        border.color = "black",
+                        cols = cols,
+                        border.size = 0.01,
+                        dark.background = F,
+                        coord.fixed = T,
+                        min.cutoff = min.cutoff, max.cutoff = max.cutoff) +
+  xlim(zoom_fov[, 2]) + ylim(zoom_fov[, 1]) + coord_flip() + theme(aspect.ratio = 1/xy_ratio)
+  return(a)
+  
+}
+
+```
+
+Read in cancer MP signatures, and HH signatures
+```{r}
+mp_file <- "_aux/TableS2_MPs_filtered.csv"
+
+mps <- read.csv(mp_file)
+mps <- as.list(mps)
+
+#We can only evaluate genes in the CosMx panel
+panel <- rownames(seu.obj)
+
+mps <- lapply(mps, function(x) {
+  x[x %in% panel]
+})
+
+HHs <- read.csv("_aux/HH_signatures.csv")
+HHs <- as.list(HHs)
+HHs <- lapply(HHs, function(x) x[x!=""])
+
+#only use genes in the panel
+HHs <- lapply(HHs, function(x) {
+  x[x %in% panel]
+})
+```
+
+Score meta-programs
+```{r}
+library(UCell)
+seu.obj <- AddModuleScore_UCell(seu.obj, features=c(mps, HHs), name="", ncores=8, maxRank = 200)
+
+seu.obj$`MP7_MP2` <- seu.obj$MP7.WoundResp - seu.obj$MP2.RadMig
+```
+
+```{r}
+which.HH <- "KEGG_HEDGEHOG_SIGNALING_PATHWAY"
+
+seu.obj$HHscore <- seu.obj@meta.data[,which.HH]
+
+sigs.score.data <- seu.obj@meta.data[,c(grep("MP",names(seu.obj@meta.data),value = T),
+                                    "HHscore","Patient_ID","pat_fov","celltype")]
+#only use ulcerated-nodular samples
+sigs.score.data <- sigs.score.data[sigs.score.data$Patient_ID %in% c("PatientA","PatientB"),]
+#only look at cancer cells for HH pathway
+sigs.score.data <- sigs.score.data[sigs.score.data$celltype == "Cancer.cells",]
+
+# number of FOVs
+length(unique(sigs.score.data$pat_fov))
+
+head(sigs.score.data)
+```
+
+Average correlation coefficient by FOV
+```{r}
+mp.use <- names(mps)
+corr <- lapply(names(mps), function(mp) {
+  v <- c()
+  for (s in unique(sigs.score.data$pat_fov)) {
+    sub <- sigs.score.data[sigs.score.data$pat_fov == s,]
+    v[s] <- cor(x=sub[,mp], y=sub[,"HHscore"], method="pearson")
+  }
+  v
+}) 
+names(corr) <- mp.use
+df <- as.data.frame(corr)
+
+#sort by mean MP activity
+avgs <- apply(df, 2, mean)
+order <- sort(avgs, decreasing = T)
+
+df$FOV <- rownames(df)
+melt <- reshape2::melt(df)
+colnames(melt) <- c("FOV","MP","Correlation")
+melt$MP <- factor(melt$MP, levels=names(order))
+
+cols <- c("red","forestgreen","blue","deeppink","darkcyan","orange","darkmagenta")
+names(cols) <- mp.use
+
+a <- ggplot(melt, aes(y = Correlation, x = MP, fill=MP)) +
+    scale_fill_manual(values=cols) +
+    geom_hline(yintercept=0, linetype='dotted') +
+    geom_boxplot(width=0.8, color="black", outlier.size = 2) +
+    theme_classic2() +
+    theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("Correlation with HH score by FOV (N=27)")
+a
+
+ggsave("plots/MPs_vs_HH_correlation_by_FOV.pdf", height=4.5, width=4.5)
+```
+
+
+MP activity, and HH score for same slide
+```{r fig.height=12, fig.width=8}
+which.pat <- "PatientB"
+slide <- 2
+cols <- c("red","forestgreen","blue","deeppink","darkcyan","orange","darkmagenta")
+
+c <- plot_mp_region(seu.obj, patient_id = which.pat, condition = "Ulcerated_nodular",
+                    min.cutoff = -0.2, max.cutoff = 0.2,
+                    slide = slide, mp="MP7_MP2", celltype="Cancer.cells") +
+  scale_fill_gradient2(low=cols[2],mid="white",high=cols[7])
+c + ggtitle(which.pat)
+ggsave(sprintf("plots/%s_slide%s_allFOVs_MP7-MP2.pdf", which.pat, slide), plot=c, height=12, width=8)
+
+d <- plot_mp_region(seu.obj, patient_id = which.pat, condition = "Ulcerated_nodular",
+                    min.cutoff = 0, max.cutoff = 0.3,
+                    slide = slide, mp="HH_targets", col = "brown",  celltype="Cancer.cells")
+d + ggtitle(which.pat)
+
+ggsave(sprintf("plots/%s_slide%s_allFOVs_HHsignature_target.pdf", which.pat, slide), plot=d, height=12, width=8)
+```

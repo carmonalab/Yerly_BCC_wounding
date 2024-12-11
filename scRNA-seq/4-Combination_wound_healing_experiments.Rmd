@@ -1,0 +1,239 @@
+---
+title: "Combination of data from wounding experiments"
+author: "Massimo Andreatta & Laura Yerly"
+output: html_document
+date: "2024-02-28"
+---
+
+```{r setup, include=FALSE,fig.width=16,fig.height=12}
+renv::restore()
+library(ggplot2)
+library(patchwork)
+library(Seurat)
+library(Matrix)
+```
+
+The data can be downloaded from GEO (GSE266665): https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE266665
+
+Read count matrices
+```{r}
+data_dir <- "~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/raw/Wounding_countmatrices"
+
+all_samples <- list.files(path=data_dir, pattern = "Base|Wound|Unwound", full.names = T)
+sample_ids <- list.files(path=data_dir, pattern = "Base|Wound|Unwound", full.names = F)
+```
+
+Standardize gene symbols while loading
+```{r}
+library(STACAS)
+# load gene symbols dataset
+data(EnsemblGeneTable.Hs)
+
+options("Seurat.object.assay.version" = "v3")
+
+seu.list <- lapply(seq_along(all_samples), function(i) {
+  
+  mtx <- paste0(all_samples[i], "/filtered_feature_bc_matrix")
+  
+  mat <- Read10X(mtx)
+  a <- CreateSeuratObject(mat, min.features = 50, min.cells = 0)
+  a <- StandardizeGeneSymbols(a, slots = "counts", EnsemblGeneTable = EnsemblGeneTable.Hs)
+  
+  a$Sample <- sample_ids[i]
+  NormalizeData(a)
+})
+```
+
+#Merge into single object
+```{r}
+data_seurat <- Reduce(f=merge, x=seu.list)
+#data_seurat <- JoinLayers(data_seurat)
+```
+
+
+## Dissociation-related genes
+Dissociation-related genes: Genes associated with the dissociation
+protocol, i.e. stress genes, can sometimes cause clustering of cells in
+different groups. Described by van den brink et al 2017
+<https://www.nature.com/articles/nmeth.4437#accession-codes> Another
+paper (Fan et al 2019) used the genes in Van Den Brink et al. (2017) and
+posted the Rmd with the code to remove genes on github:
+<https://www.nature.com/articles/s41467-019-11036-9#code-availability>
+removed cells that expressed high dissociation-related genes. Eg in
+Rachel's analysis of Jeremiah's data, she saw that a 10% dissoc-related
+gene cut off was removing many cells, one cluster was very high for
+those genes, but even regressing-out the genes would not remove fully
+this cluster that they couldn't really annotate, so they removed it.
+Gene list is from Van Den Brink et al. (2017) R code in supplementary
+method under "In silico purification"
+```{r}
+dissoc_genes <- c("Actg1__chr11","Ankrd1__chr19","Arid5a__chr1","Atf3__chr1","Atf4__chr15","Bag3__chr7","Bhlhe40__chr6",
+                  "Brd2__chr17","Btg1__chr10","Btg2__chr1","Ccnl1__chr3","Ccrn4l__chr3","Cebpb__chr2","Cebpd__chr16",
+                  "Cebpg__chr7","Csrnp1__chr9","Cxcl1__chr5","Cyr61__chr3","Dcn__chr10","Ddx3x__chrX","Ddx5__chr11",
+                  "Des__chr1","Dnaja1__chr4","Dnajb1__chr8","Dnajb4__chr3","Dusp1__chr17","Dusp8__chr7",
+                  "Egr1__chr18","Egr2__chr10","Eif1__chr11","Eif5__chr12","Erf__chr7","Errfi1__chr4","Fam132b__chr1",
+                  "Fos__chr12","Fosb__chr7","Fosl2__chr5","Gadd45a__chr6","Gcc1__chr6","Gem__chr4","H3f3b__chr11",
+                  "Hipk3__chr2","Hsp90aa1__chr12","Hsp90ab1__chr17","Hspa1a__chr17","Hspa1b__chr17","Hspa5__chr2",
+                  "Hspa8__chr9","Hspb1__chr5","Hsph1__chr5","Id3__chr4","Idi1__chr13","Ier2__chr8","Ier3__chr17",
+                  "Ifrd1__chr12","Il6__chr5","Irf1__chr11","Irf8__chr8","Itpkc__chr7","Jun__chr4","Junb__chr8",
+                  "Jund__chr8","Klf2__chr8","Klf4__chr4","Klf6__chr13","Klf9__chr19","Litaf__chr16","Lmna__chr3",
+                  "Maff__chr15","Mafk__chr5","Mcl1__chr3","Midn__chr10","Mir22hg__chr11","Mt1__chr8","Mt2__chr8",
+                  "Myadm__chr7","Myc__chr15","Myd88__chr9","Nckap5l__chr15","Ncoa7__chr10","Nfkbia__chr12","Nfkbiz__chr16",
+                  "Nop58__chr1","Nppc__chr1","Nr4a1__chr15","Odc1__chr12","Osgin1__chr8","Oxnad1__chr14","Pcf11__chr7",
+                  "Pde4b__chr4","Per1__chr11","Phlda1__chr10","Pnp__chr14","Pnrc1__chr4","Ppp1cc__chr5","Ppp1r15a__chr7",
+                  "Pxdc1__chr13","Rap1b__chr10","Rassf1__chr9","Rhob__chr12","Rhoh__chr5","Ripk1__chr13","Sat1__chrX",
+                  "Sbno2__chr10","Sdc4__chr2","Serpine1__chr5","Skil__chr3","Slc10a6__chr5","Slc38a2__chr15",
+                  "Slc41a1__chr1","Socs3__chr11","Sqstm1__chr11","Srf__chr17","Srsf5__chr12","Srsf7__chr17",
+                  "Stat3__chr11","Tagln2__chr1","Tiparp__chr3","Tnfaip3__chr10","Tnfaip6__chr2","Tpm3__chr3",
+                  "Tppp3__chr8","Tra2a__chr6","Tra2b__chr16","Trib1__chr15","Tubb4b__chr2","Tubb6__chr18",
+                  "Ubc__chr5","Usp2__chr9","Wac__chr18","Zc3h12a__chr4","Zfand5__chr19","Zfp36__chr7","Zfp36l1__chr12",
+                  "Zfp36l2__chr17","Zyx__chr6","Gadd45g__chr13","Hspe1__chr1","Ier5__chr1","Kcne4__chr1")
+dissoc_genes <- toupper(sapply(dissoc_genes, function(x){
+  strsplit(x, "__")[[1]][1]
+}))
+length(dissoc_genes) # 140
+head(dissoc_genes)
+```
+
+```{r define_qc_metrics}
+#Get mitochondrial and ribosomal signatures
+library(SignatuR)
+ribo.genes <- GetSignature(SignatuR$Hs$Compartments$Ribo)
+mito.genes <- GetSignature(SignatuR$Hs$Compartments$Mito)
+
+
+# Compute ribosomal and mitochondrial content and add to Seurat object metadata
+data_seurat <- AddMetaData(data_seurat, metadata = PercentageFeatureSet(data_seurat, features = ribo.genes[ribo.genes %in% rownames(data_seurat)]), col.name = "percent.ribo")
+
+data_seurat <- AddMetaData(data_seurat, metadata = PercentageFeatureSet(data_seurat, features = mito.genes[mito.genes %in% rownames(data_seurat)]), col.name = "percent.mito")
+
+data_seurat <- AddMetaData(data_seurat, metadata = PercentageFeatureSet(data_seurat, features = dissoc_genes[dissoc_genes %in% rownames(data_seurat)]), col.name = "percent.dissoc")
+
+# Compute the ratio of number of genes/features and number of counts/UMIs
+data_seurat$log10GenesPerUmi <- log10(data_seurat$nFeature_RNA) / log10(data_seurat$nCount_RNA)
+
+```
+
+
+```{r qc_plots0, fig.height= 10}
+Idents(data_seurat) <- "Sample"
+VlnPlot(data_seurat,
+        features = c("nFeature_RNA", "nCount_RNA",
+                     "percent.ribo","percent.mito",
+                     "percent.dissoc","log10GenesPerUmi"),
+        ncol = 3, pt.size=0)
+```
+
+
+### Custom thresholds
+
+```{r set_cutoffs}
+cutoffs <- list()
+cutoffs[["percent.ribo"]] <- c(min=0,max=60)
+cutoffs[["percent.mito"]] <- c(min=0,max=20)
+cutoffs[["nFeature_RNA"]] <- c(min=500,max=6000) 
+cutoffs[["nCount_RNA"]] <- c(min=600,max=25000)
+cutoffs[["percent.dissoc"]] <- c(min=0, max=10)
+cutoffs[["log10GenesPerUmi"]] <- 0.8
+print(cutoffs)
+```
+
+
+### Standard check
+
+```{r probs}
+for(va in names(cutoffs)){
+  cat(va, "\n")
+  print(quantile(data_seurat@meta.data[[va]],
+                 probs=c(0.001, 0.005, 0.01, 0.02, 0.1, 0.50, 0.9,
+                         0.98, 0.99, 0.995, 0.999))
+        )
+}
+```
+
+
+
+```{r subset_seurat fig.height= 10}
+# store initial number of cells
+initialCellNum <- ncol(data_seurat)
+message(paste("Original number of cells:", initialCellNum))
+
+# Perform subsetting using cutoffs list and qc metrics considered
+data_seurat <- subset(data_seurat, subset = 
+                        nFeature_RNA >= cutoffs[["nFeature_RNA"]]["min"] &
+                        nFeature_RNA < cutoffs[["nFeature_RNA"]]["max"] & 
+                        nCount_RNA   >= cutoffs[["nCount_RNA"]]["min"]   & 
+                        nCount_RNA   < cutoffs[["nCount_RNA"]]["max"]   &  
+                        percent.ribo >= cutoffs[["percent.ribo"]]["min"] & 
+                        percent.ribo < cutoffs[["percent.ribo"]]["max"] &
+                        percent.mito >= cutoffs[["percent.mito"]]["min"] &
+                        percent.mito < cutoffs[["percent.mito"]]["max"] &
+                        percent.dissoc >= cutoffs[["percent.dissoc"]]["min"] &
+                        percent.dissoc < cutoffs[["percent.dissoc"]]["max"] &
+                        log10GenesPerUmi > cutoffs[["log10GenesPerUmi"]]
+                      )
+
+# Print and evaluate the cell drop out after filtering
+l <- ncol(data_seurat)
+message(sprintf("Number of cells after QC: %i (%.2f %% of input)", l, 100*l/initialCellNum))
+```
+
+
+
+## Data scaling and dimensionality reduction
+
+```{r}
+bcc_WH <- data_seurat
+bcc_WH <- NormalizeData(bcc_WH) |> FindVariableFeatures(nfeatures=2000) |>
+  ScaleData()
+
+bcc_WH <- bcc_WH |> RunPCA(npcs=30) |> RunUMAP(reduction = "pca", dims = 1:30)
+
+a <- DimPlot(bcc_WH, reduction = "umap", group.by = "Sample") + theme(aspect.ratio = 1)
+a
+```
+
+## Clustering
+
+```{r}
+bcc_WH <- FindNeighbors(object = bcc_WH, dims=1:30)
+bcc_WH <- FindClusters(object = bcc_WH, resolution = 1)
+DimPlot(bcc_WH, reduction = "umap", group.by = "seurat_clusters") + theme(aspect.ratio = 1)
+```
+
+##Broad classification using scGate
+
+```{r}
+library(scGate)
+
+models.DB <- scGate::get_scGateDB()
+models.list <- models.DB$human$TME_HiRes
+
+models.list$Melanocyte <- gating_model(name = "Melanocyte", signature = c("PMEL","MLANA","LYZ-"))
+
+bcc_WH <- scGate(bcc_WH, model = models.list, ncores = 8, multi.asNA = T)
+```
+
+```{r}
+b <- DimPlot(bcc_WH, group.by = "scGate_multi", label = T, repel = T, label.size = 2) +
+    theme(aspect.ratio = 1) + ggtitle("scGate annotation")
+b
+```
+
+```{r fig.width=12}
+a | b
+```
+
+```{r}
+table(bcc_WH$scGate_multi, useNA = "ifany")
+table(bcc_WH$scGate_multi, bcc_WH$Sample, useNA = "ifany")
+```
+
+
+## Save 
+```{r}
+file <- "cache/WHexp.rds"
+
+saveRDS(bcc_WH, file)
+```
+

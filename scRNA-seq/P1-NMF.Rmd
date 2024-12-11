@@ -1,0 +1,154 @@
+---
+title: "Apply NMF on BCC samples"
+author: "Massimo Andreatta"
+date: "`r format(Sys.Date(),'%e de %B, %Y')`"
+output: 
+  rmdformats::downcute:
+    lightbox: true
+    thumbnails: false
+    self_contained: true
+    gallery: true
+    code_folding: show
+  pkgdown:
+    as_is: true
+---
+
+
+```{r, include=FALSE, fig.width=16, fig.height=12}
+renv::restore()
+library(Seurat)
+library(ggplot2)
+library(SignatuR)
+library(UCell)
+library(patchwork)
+library(tidyr)
+library(dplyr)
+library(RColorBrewer)
+library(GeneNMF)
+```
+
+
+## Read in datasets
+
+The discovery set for NMF analysis can be pre-processed using the scripts 1*.Rmd, 2*.Rmd and 3*.Rmd.
+
+```{r}
+data.path <- "cache/Tumor_combination_LY_CG.rds"
+seu <- readRDS(data.path)
+```
+
+
+Prep data
+```{r}
+DefaultAssay(seu) <- "RNA"
+
+seu.list <- SplitObject(seu, split.by = "Sample")
+```
+
+
+##Using GeneNMF version 0.4.0 (from CRAN)
+```{r message=F, results=F, warning=F, echo=FALSE}
+set.seed(123)
+
+geneNMF.programs <- multiNMF(seu.list, assay="RNA", slot="data", k=4:9,
+                    min.exp = 0.05, max.exp = 3, nfeatures = 2000, seed=123)
+```
+
+Extract meta-programs
+```{r}
+geneNMF.metaprograms <- getMetaPrograms(geneNMF.programs, max.genes=200,
+                                        hclust.method="ward.D2", nprograms=10,
+                                        min.confidence=0.3)
+```
+
+MP genes:
+```{r}
+a <- lapply(geneNMF.metaprograms$metaprograms.genes, function(x){head(x, n=20)})
+a
+```
+
+MP statistics:
+```{r}
+geneNMF.metaprograms$metaprograms.metrics
+```
+
+
+Heatmap of MP similarity
+```{r fig.width=10, fig.height=8}
+ph <- plotMetaPrograms(geneNMF.metaprograms, jaccard.cutoff = c(0,1))
+
+ggsave("plots/BCC_heatmap_jaccard.pdf", plot=ph, height=7, width=9)
+```
+
+Set criteria to remove meta-programs:
+```{r}
+geneNMF.metaprograms$metaprograms.metrics
+
+tokeep <- geneNMF.metaprograms$metaprograms.metrics[geneNMF.metaprograms$metaprograms.metrics$silhouette > 0 &
+                                                        geneNMF.metaprograms$metaprograms.metrics$meanJaccard > 0.01 &
+                                                        geneNMF.metaprograms$metaprograms.metrics$numberGenes >= 5, ]
+
+geneNMF.metaprograms$metaprograms.metrics <- tokeep
+
+geneNMF.metaprograms$metaprograms.genes <- geneNMF.metaprograms$metaprograms.genes[rownames(tokeep)]
+```
+
+NOTE: MP6 and MP8 are largely overlapped. These could be merged or one could be discarded. Because MP6 one has a significantly higher sample coverage, we can discard the other one.
+
+Quantify similarity between MPs:
+
+```{r}
+overlap_coef <- function(vec1, vec2) {
+  intersection <- length(intersect(vec1, vec2))
+  min_size <- min(c(length(vec1), length(vec2)))
+  return(intersection / min_size)
+}
+
+
+num_vectors <- length(geneNMF.metaprograms$metaprograms.genes)
+similarity_matrix <- matrix(NA, nrow = num_vectors, ncol = num_vectors)
+max_overlap_coef <- rep(0,length(geneNMF.metaprograms$metaprograms.genes))
+
+# Compute similarity between all pairs of vectors
+for (i in 1:num_vectors) {
+  for (j in 1:num_vectors) {
+    if (i != j) {
+      similarity_matrix[i, j] <- overlap_coef(geneNMF.metaprograms$metaprograms.genes[[i]], geneNMF.metaprograms$metaprograms.genes[[j]])
+      if (similarity_matrix[i, j] > max_overlap_coef[i]) { max_overlap_coef[i] <- similarity_matrix[i, j]}  
+    } else {
+      similarity_matrix[i, j] <- 1  
+    }
+  }
+}
+rownames(similarity_matrix) <- rownames(geneNMF.metaprograms$metaprograms.metrics)
+colnames(similarity_matrix) <- rownames(geneNMF.metaprograms$metaprograms.metrics)
+
+print(similarity_matrix)
+heatmap(similarity_matrix)
+```
+
+```{r}
+geneNMF.metaprograms$metaprograms.metrics$maxOverlapCoef <- max_overlap_coef
+geneNMF.metaprograms$metaprograms.metrics
+```
+
+
+
+```{r}
+tokeep <- geneNMF.metaprograms$metaprograms.metrics[rownames(geneNMF.metaprograms$metaprograms.metrics) != "MP9",] # large gene overlap (>40%) with MP6 and low sampleCoverage (<40%)
+geneNMF.metaprograms$metaprograms.metrics <- tokeep
+geneNMF.metaprograms$metaprograms.genes <- geneNMF.metaprograms$metaprograms.genes[rownames(tokeep)]
+rownames(tokeep)
+```
+
+```{r}
+#Save gene list to file
+as.df <- t(plyr::ldply(geneNMF.metaprograms$metaprograms.genes, rbind))
+write.csv(as.df, file = "_aux/NMF.genes.10mp.csv")
+```
+
+# Save results
+```{r}
+saveRDS(geneNMF.metaprograms, file="cache/NMF_meta_res.rds")
+```
+
