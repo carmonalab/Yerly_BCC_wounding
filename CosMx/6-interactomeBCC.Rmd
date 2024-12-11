@@ -405,13 +405,13 @@ to_keep <- c("pat_fov", "orig.ident", "nCount_Nanostring", "nFeature_Nanostring"
              "Max.PanCK", "Mean.CD68", "Max.CD68", "Mean.Membrane", "Max.Membrane", 
              "Mean.CD45", "Max.CD45", "Mean.DAPI", "Max.DAPI", "Slide_name", 
              "Run_name", "Run_Slide_name", 
-             "slide_ID_numeric", "Run_Tissue_name.x", "log10totalcounts", "id", "Run_Tissue_name.y", 
+             "slide_ID_numeric", "Run_Tissue_name.x", "log10totalcounts", "id",
              "FOV", "Patient_ID", "Area_ID", "Condition", "Ulcerated_area", 
              "Dist_from_wound", "Wound_direction", "Morphology",
              "prop_neg", "low_quality", "celltype", "celltype_prob",
              "Run_Tissue_name", "Condition2", "MP1.CellCyc", "MP2.RadMig", 
              "MP3.EpiDiff", "MP4.Angiogen", "MP5.Hypoxia", "MP6.Stress", "MP7.WoundResp", 
-             "CAF_wound", "CAF_unwound.baseline", "CAF_wound-unwound", "invasiveness", 
+             "CAF_wound", "CAF_unwound.baseline", "invasiveness", 
              "invasiveCAF", "homotypic", "x", "y", "neighbors_vector", "neighbors_encoding")
 seu.obj@meta.data <- seu.obj@meta.data[,to_keep]
 
