@@ -546,32 +546,46 @@ volpl(res.list$Fibroblast,
 ```
 
 
-## Obtain CAF wounding signatures
+# Obtain wounding signatures of Fibroblasts, MoMac, panDc and pericytes
 Genes with a log2 fold change > 0.5 and adjusted p-value < 0.05 were identified as part of the wound signature, while those with a log2 fold change < -0.5 and adjusted p-value < 0.05 constituted the unwound/baseline signature.
 
 ```{r CAF_signatures}
-# keep only DE genes with abs log2 fold change > 0.5
-res0 <- res.list$Fibroblast %>% 
-  filter(padj<0.05 & abs(log2FoldChange) > 0.5) %>% 
-  mutate(type = ifelse(sign(log2FoldChange)>0,
-                   "Wound", "Unwound")
-    )
-# split by type (sign)
-res.spl <- split(res0, f = res0$type)
 
-# pull gene names
-lys <- lapply(res.spl, function(l){
-  l %>% 
-    mutate(fc = abs(log2FoldChange)) %>% 
-    rownames_to_column("gene") %>% 
-    pull(gene)
-})
+ct <- c("Fibroblast", "MoMac", "panDC", "Perycyte")
+
+sigs <- lapply(ct,
+               function(c){
+                 res0 <- res.list[[c]] %>% 
+                   # keep only DE genes with abs log2 fold change > 0.5
+                   filter(abs(log2FoldChange) > 0.5 & padj < 0.05) %>% 
+                   mutate(type = ifelse(sign(log2FoldChange)>0,
+                                        "Wound", "Unwound")
+                   )
+                 
+                 res.spl <- split(res0, f = res0$type)
+                 
+                 ntop = 1000 # limit number of genes
+                 
+                 lys <- lapply(res.spl, function(l){
+                   l %>% 
+                     mutate(fc = abs(log2FoldChange)) %>% 
+                     arrange(desc(fc)) %>% 
+                     head(ntop) %>% 
+                     rownames_to_column("gene") %>% 
+                     pull(gene)
+                 })
+                 
+                 lys
+               })
+
+names(sigs) <- ct
 
 # save for scoring later
-saveRDS(lys, "cache/CAF_signatures.rds")
+saveRDS(sigs, "cache/Wounding_signatures.rds")
 ```
 
-This signatures will be then used in scripts P6*.Rmd for scoring the wound response in CAF in retrospective BCC samples.
+
+This signatures will be then used in scripts P6*.Rmd for scoring the wound response in respectrive cell types in retrospective BCC samples.
 
 
 
