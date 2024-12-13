@@ -13,16 +13,14 @@ output:
     as_is: true
 ---
 
-The goals of this script is to measure in the CAF of retrospective BCC patient cohort the:
+The goals of this script is to measure in the cell types of retrospective BCC patient cohort the:
 
-  1. Wound-responding CAF signature (see script `P5-wounding_TME_CAFsignature.Rmd`)
+  1. Wound-responding TME signatures (see script `P5-wounding_TME_signatures.Rmd`) for each corresponding celltype.
   2. Wound-related invasive (WRI), captured by MP7 metaprogram (see scripts from P1 to P3)
-
-For that in each datasets, we will isolate respectively CAF and cancer cells and compute wound-response CAF signature and MP7.
 
 Finally, mean for each score is obtained per patient.
 
-The score was computed on fibroblasts from different datasets: non-cancer, adjacent skin samples (“Normal adjacent”, N=6) obtained from GSE144236, Hedgehog inhibition (HHI)-therapy resistant BCC (N=7, samples from GSE123814), squamous cell carcinomas (N=5, samples from GSE144236), and BCC tumors (N=11, samples from GSE181907 and E-MTAB-13085) 
+The score was computed on cells from different datasets: non-cancer, adjacent skin samples (“Normal adjacent”, N=6) obtained from GSE144236, Hedgehog inhibition (HHI)-therapy resistant BCC (N=7, samples from GSE123814), squamous cell carcinomas (N=5, samples from GSE144236), and BCC tumors (N=11, samples from GSE181907 and E-MTAB-13085) 
 
 
 
@@ -88,10 +86,10 @@ joinmods <- c(mods, hitmodels)
 # Load signatures
 ## wound-responding CAF
 
-Load signatures previously produced in `P5-wounding_TME_CAFsignature.Rmd`.
+Load signatures previously produced in `P5-wounding_TME_signatures.Rmd`.
 ```{r Load_signatures}
 # Load file with signatures
-lys <- readRDS("cache/CAF_signatures.rds")
+lys <- readRDS("cache/Wounding_signatures.rds")
 ```
 
 ## MP7 wound response on cancer cells
@@ -105,7 +103,7 @@ mp <- read.xlsx("_aux/markers.MP.xlsx") %>%
 
 
 
-# Process datasets
+# Process retrospective datasets
 
 ## BCC tumors (GSE181907 and E-MTAB-13085)
 Processing code of this datasets can be found:
@@ -125,22 +123,21 @@ ni <- read.csv(file.path(fpath, "BCC_seurat_metadata.csv"))
 keep_patients <- unique(ni$patient_bcc)
 ```
 
-Build a dataframe with Mean MP7 and ni score per patient
 
-At the same time classify them as non-invasive or invasive:
-To identify non-invasive and invasive BCC tumors, samples from 11 patients having at least 100 cancer cells were classified using the following criteria. The average NI score by patient was calculated on their cancer cells. Based on the average NI score, patients were split into two groups of equal size: patients with an average NI score above the median were classified as invasive BCC, while those with an average NI score below the median were classified as non-invasive BCC. 
+*Classify them as non-invasive or invasive:*
+To identify non-invasive and invasive BCC tumors, samples from 11 patients having at least 100 cancer cells were classified using the following criteria. The average NI score by patient was calculated on their cancer cells. Based on the average NI score, patients were split into two groups of equal size: patients with an average NI score above the median were classified as invasive BCC, while those with an average NI score below the median were classified as Nodular. 
 
 
 ```{r}
-ni7 <- ni %>% 
+nimed <- ni %>% 
   group_by(patient_bcc) %>% 
   summarize(mean_ni_score = mean(ni_score),
             Mean_MP7_score = mean(MP7.WR)) %>% 
   distinct() %>% 
   ungroup() %>% 
   mutate(category = ifelse(mean_ni_score < -0.02,
-                           "Non-invasive BCC",
-                           "Invasive BCC")
+                           "Nodular",
+                           "Infiltrative")
   )
 ```
 
@@ -165,87 +162,6 @@ gc()
 spl <- spl[keep_patients]
 ```
 
-### Run scGate
-Classify broad cell types
-
-```{r annotate_BCC}
-spl <- lapply(spl,
-               function(s){
-                 scGate(s,
-                 model = allmodels,
-                 multi.asNA = T,
-                 ncores = 7)
-               })
-```
-
-Classify now fibroblasts
-Filter Fibroblasts
-```{r annotate_stromal_BCC}
-spl.fibro <- lapply(spl,
-                    function(s){
-                      subset(s, scGate_multi == "Fibroblast" &
-                               annotation != "Cancer_cells")
-                    })
-
-```
-
-Classify fibroblasts into CAF, pericytes and SMC
-```{r}
-spl.fibro <- lapply(spl.fibro,
-                    function(s){
-                      scGate::scGate(s,
-                                     min.cells = 15,
-                                     model = mods,
-                                     ncores = 8,
-                                     pca.dim = 20)
-                    })
-```
-
-
-
-### Filter CAF and score
-Filter CAF
-```{r filter_CAF_BCC}
-spl.fibro <- lapply(spl.fibro,
-                     function(s){
-                       if(nrow(s@meta.data %>% filter(scGate_multi == "Fibroblast"))>9)  {                    
-                         sub <- subset(s, scGate_multi == "Fibroblast")
-                         return(sub)
-                       } else{
-                         return(NULL)
-                       }
-                     })
-spl.fibro <- Filter(Negate(is.null), spl.fibro)
-```
-
-Score wound-response on CAF
-```{r score_CAF_BCC}
-ss <- merge(spl.fibro[[1]], spl.fibro[-1])
-
-ss <- AddModuleScore_UCell(ss,
-                           features = lys,
-                           ncores = 8)
-
-sel <- grep("wound|patient", names(ss@meta.data),
-            ignore.case = T, value = T)
-
-bcc.CAF <- ss@meta.data[,sel] %>% 
-  mutate(CAF_score = Wound_UCell - Unwound_UCell) %>% 
-  group_by(patient_bcc) %>% 
-  summarize(Mean_CAF_score = mean(CAF_score)) 
-```
-
-
-### Combine scores
-Let's join the 2 scores in the same dataset. The data from MP7 was already obtained for these samples previously.
-
-```{r join_BCC}
-bcc.mean <- full_join(bcc.CAF, ni7,
-                     by = "patient_bcc") 
-```
-
-
-
 
 ## Advanced BCC (GSE123814)
 Hedgehog inhibition (HHI)-therapy resistant BCC
@@ -260,105 +176,15 @@ yo <- readRDS(file)
 ```
 
 ### Run scGate
-Classify CAFs using previously loaded scGate models
+Classify cell types using previously loaded scGate models
 
 ```{r annotate_Yost}
 yoli <- SplitObject(yo, "patient")
-
-yoli <- lapply(yoli,
-               function(s){
-                 scGate(s,
-                 model = joinmods,
-                 ncores = 9)
-               })
-```
-
-### Filter CAF and score
-Filter CAF
-```{r filter_CAF_yost}
-yoli.fibro <- lapply(yoli,
-                     function(s){
-                       if(nrow(s@meta.data %>% filter(scGate_multi == "Fibroblast"))>9)  {                    
-                         sub <- subset(s, scGate_multi == "Fibroblast")
-                         return(sub)
-                       } else{
-                         return(NULL)
-                       }
-                     })
-# filter patients with less than 10 cells
-yoli.fibro <- Filter(Negate(is.null), yoli.fibro)
-```
-
-Score wound-response on CAF
-```{r score_CAF_yost}
-ss <- merge(yoli.fibro[[1]], yoli.fibro[-1])
-
-ss <- AddModuleScore_UCell(ss,
-                           features = lys,
-                           ncores = 8)
-
-sel <- grep("wound|patient", names(ss@meta.data),
-            ignore.case = T, value = T)
-
-yo.CAF <- ss@meta.data[,sel] %>% 
-  mutate(CAF_score = Wound_UCell - Unwound_UCell) %>% 
-  group_by(patient) %>% 
-  summarize(Mean_CAF_score = mean(CAF_score))  %>% 
-  dplyr::rename("patient_bcc" = "patient")
+rm(yo); gc()
 ```
 
 
-
-### Filter cancer cells and score
-Filter cancer cells
-```{r filter_cancer_Yost}
-yoli.ck <- lapply(yoli,
-                  function(s){
-                    if(nrow(s@meta.data %>% filter(annotation == "Cancer_cells"))>9)  {                    
-                      sub <- subset(s, annotation == "Cancer_cells")
-                      return(sub)
-                    } else{
-                      return(NULL)
-                    }
-                  })
-
-# filter patients with less than 10 cells
-yoli.ck <- Filter(Negate(is.null), yoli.ck)
-```
-
-Score MP7 wound response signature
-```{r score_cancer_Yost}
-# merge for computing the MP7 program
-ss <- merge(yoli.ck[[1]], yoli.ck[-1])
-
-# UCell score
-ss <- AddModuleScore_UCell(ss,
-                           features = mp["MP7.WR"],
-                           ncores = 8)
-# get only relevant data
-sel <- grep("WR|patient", names(ss@meta.data),
-            ignore.case = T, value = T)
-
-# get mean per patient
-yo.MP7 <- ss@meta.data[,sel] %>% 
-  group_by(patient) %>% 
-  summarize(Mean_MP7_score = mean(MP7.WR_UCell)) %>% 
-  dplyr::rename("patient_bcc" = "patient")
-```
-
-### Combine scores
-Let's join the 2 scores in the same dataset
-```{r join_yost}
-yo.mean <- full_join(yo.CAF, yo.MP7,
-                     by = "patient_bcc") %>% 
-  # add category
-  mutate(category = "Advanced BCC")
-```
-
-
-
-
-## Squamos cell carcinoma (SCC) and non-tumoral tissue (GSE144236)
+## Squamos cell carcinoma (SCC) and non-tumoral tissue [GSE144236]
 This data was obtained from [GEO](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE144236) and it is coming from this paper from [Ji et al., 2020](https://www.sciencedirect.com/science/article/pii/S0092867420306723?via%3Dihub) 
 
 ### Download dataset
@@ -418,262 +244,243 @@ ji <- StandardizeGeneSymbols(ji,
 ```
 
 Normalize data
-```{r Normalize_Ji}
+```{r Normalize and split-patient}
 ji <- NormalizeData(ji)
 ```
 
+### Standardize metadata
+```{r standard_metadata_Ji}
+ji$annotation <- ji$level2_celltype
 
-### Run scGate
-Classify CAFs using previously loaded scGate models
+ji$annotation[ji$annotation == "Tumor_KC"] <- "Cancer_cells"
 
-```{r annotate_Ji}
-# predict sample-wise
+ji$patient_bcc <- ji$sample
+```
+
+
+
+split object
+```{r split_JiDataset}
+
 jili <- SplitObject(ji, "sample")
 
-jili <- lapply(jili,
-               function(s){
-                 scGate(s,
-                 model = joinmods,
-                 ncores = 9)
-               })
 ```
 
-### Filter CAF and score
-Filter CAF
-```{r filter_CAF_Ji}
-jili.fibro <- lapply(jili,
-                     function(s){
-                       if(nrow(s@meta.data %>% filter(scGate_multi == "Fibroblast"))>9)  {                    
-                         sub <- subset(s, scGate_multi == "Fibroblast")
-                         return(sub)
-                       } else{
-                         return(NULL)
-                       }
-                     })
-# filter patients with less than 10 cells
-jili.fibro <- Filter(Negate(is.null), jili.fibro)
+
+## Join datasets
+```{r join_list_Datasets}
+bcca <- c(yoli, jili, spl)
+rm(spl, yoli, jili); gc()
+
+saveRDS(bcca, "cache/retrospective_all_list.rds")
 ```
 
-Score wound-response on CAF
-```{r score_CAF_Ji}
-ss <- merge(jili.fibro[[1]], jili.fibro[-1])
+# Classify cell types
 
-ss <- AddModuleScore_UCell(ss,
-                           features = lys,
-                           ncores = 8)
-
-sel <- grep("wound|tum|sample", names(ss@meta.data),
-            ignore.case = T, value = T)
-
-ji.CAF <- ss@meta.data[,sel] %>% 
-  mutate(CAF_score = Wound_UCell - Unwound_UCell) %>% 
-  group_by(sample) %>% 
-  summarize(Mean_CAF_score = mean(CAF_score))  %>% 
-  ungroup() %>% 
-  dplyr::rename("patient_bcc" = "sample")
+```{r classify_scGate}
+done <- c()
+for(a in names(bcca)[!names(bcca) %in% done]){
+  # we can do just one scGate
+  cat("####################### Doing scGate for", a, "#######################\n")
+  if("scGate_multi" %in% names(bcca[[a]]@meta.data)){
+    bcca[[a]]$sGate_multi0 <- bcca[[a]]$scGate_multi
+  }
+  
+  bcca[[a]] <- scGate::scGate(bcca[[a]],
+                              model = joinmods,
+                              ncores = 8)
+  
+  done <- c(done, a)
+  cat("--------------- ", length(done), " / ", length(bcca), " -------------\n\n")
+}
 ```
 
 
 
-### Filter cancer cells and score
-Filter cancer cells
-On this occassion we used the cancer cell annotation according to authors, already included in the metadata
-```{r filter_cancer_Ji}
-# keep only cancer cells according to authors of Tumoral samples
-ss <- ji[,ji$tum.norm == "Tumor" & grepl("Tumor_KC", ji$level2_celltype)]
+# Signature scoring
+Since Ucell scores signatures cell-wise we can score our signatures on the whole dataset all at once and then filter cells.
+
+We are interested in measuring previously discovered programs (MPs, see `P1-NMF.Rmd`) in cancer cells and TME signatures for CAF/Fibroblasts, MoMac, DC, pericytes, which show most DE genes in wound vs non-wound samples.
+
+```{r join_signatures}
+# join signatures
+tme_celltypes <- ct <- c("Fibroblast", "MoMac", "panDC","Pericyte")
+signatures <- append(lys[tme_celltypes], mp)
 ```
 
-Score MP7 wound response signature
-```{r score_cancer_Ji}
-# UCell score
-ss <- AddModuleScore_UCell(ss,
-                           features = mp["MP7.WR"],
-                           ncores = 8)
-# get only relevant data
-sel <- grep("WR|sample", names(ss@meta.data),
-            ignore.case = T, value = T)
-
-# get mean per patient
-ji.MP7 <- ss@meta.data[,sel] %>% 
-  group_by(sample) %>% 
-  summarize(Mean_MP7_score = mean(MP7.WR_UCell)) %>% 
-  dplyr::rename("patient_bcc" = "sample")
-```
-
-### Combine scores
-Let's join the 2 scores in the same dataset
-```{r join_Ji}
-ji.mean <- full_join(ji.CAF, ji.MP7,
-                     by = "patient_bcc") %>% 
-  # add category
-  separate(patient_bcc,
-           into = c("patient", "category"),
-           sep = "_",
-           remove = F) %>% 
-  dplyr::select(-patient) %>% 
-  # define categories
-  mutate(category = factor(category,
-                           levels = c("Normal", "Tumor"),
-                           labels = c("Normal adjacent", "SCC")))
+## Filter dataset for these cell types
+```{r filter_Dataset}
+bcca.filt <- bplapply(bcca,
+                      BPPARAM = bparam,
+                      function(s){
+                        # filter for 
+                        if("annotation")
+                          # remove doublets
+                          s <- s[,s$annotation != "Doublets"]
+                        # obtain cell types
+                          sub <- s[,s$scGate_multi %in% tme_celltypes &
+                                     s$annotation == "Cancer_cells"]
+                        return(sub)
+                      })
+# merge
+bcca.mer <- merge(bcca.filt[[1]], bcca.filt[-1])
+rm(bcca.filt, bcca); gc()
 ```
 
 
-# Plotting & stats
-## Join all datasets
-```{r join_Datasets}
-all.mean <- rbindlist(list(bcc.mean, yo.mean, ji.mean),
-                      use.names = T, fill = T)
+## Scoring UCell
 
-# set levels to category
-all.mean <- all.mean %>% 
-  mutate(category = factor(category,
-                           levels = c("Normal adjacent","Non-invasive BCC",
-                                      "Invasive BCC", "Advanced BCC",
-                                      "SCC")))
+```{r score_ucell}
+bcca.mer <- AddModuleScore_UCell(bcca.mer,
+                                 features = signatures,
+                                 ncores = 8,
+                                 name = "")
 ```
 
 
-## Wound-resonding CAF
+## Wound-responding TME
+### dataframe
+```{r df_TME_Scoring}
+df <- bcca.mer@meta.data[,grepl("ound|scGate_multi$|patient_bcc", names(bcca.mer@meta.data))] %>% 
+  group_by(patient_bcc, scGate_multi) %>% 
+  summarize(across(matches("ound"), mean, .names = "{.col}"),
+            n = n()) %>% 
+  # filter cells below 10
+  filter(n > 9)   %>% 
+  dplyr::select(-n) %>% 
+  tidyr::pivot_longer(-c(patient_bcc, scGate_multi),
+                      names_to = "mm",
+                      values_to = "Score") %>% 
+  tidyr::separate(mm, sep = "[.]", into = c("celltype", "signature")) %>% 
+  filter(scGate_multi == celltype) %>% 
+  tidyr::pivot_wider(names_from = "signature",
+                     values_from = "Score") %>% 
+  mutate(Score = Wound - Unwound) %>% 
+  left_join(., nimed[,c("patient_bcc", "category")], by = "patient_bcc") %>% 
+  mutate(category = ifelse(is.na(category),
+                           "Normal adjacent",
+                           as.character(category)),
+         category = factor(category,
+                           levels = c("Normal adjacent",
+                                      "Nodular",
+                                      "Infiltrative")
+         ),
+         celltype = factor(celltype,
+                           levels = c("Fibroblast", "MoMac",
+                                      "panDC", "Perycyte"),
+                           labels = c("Fibroblast/CAF", "MoMac",
+                                      "panDC", "Pericyte"))
+  )
+```
+
 ### Plot
-```{r plot_wr_CAF}
-# set colors
+```{r plot_wr_TME}
+require(ggpubr)
 lycols <- c("Normal adjacent" = "oldlace",
-            "Non-invasive BCC" = "#FFFF6C",
-            "Invasive BCC" = "#F44400",
+            "Nodular" = "#FFFF6C",
+            "Infiltrative" = "#F44400")
+
+comps <- list(
+              c("Normal adjacent", "Nodular"),
+              c("Infiltrative", "Nodular"))
+
+set.seed(22)
+pl <- df %>% 
+  ggplot(aes(category, Score, fill = category)) +
+  geom_boxplot(outlier.colour = NA,
+               show.legend = F,
+               width = 0.6) +
+  geom_jitter(width = 0.1,
+              size = 2,
+              shape = 21,
+              fill = "white",
+              show.legend = F) +
+  stat_compare_means(
+    comparisons = comps,
+    method = "wilcox.test", 
+    label = "p.format",
+    p.adjust.method = "BH",
+    size = 3.5
+  ) +
+scale_fill_manual(values = lycols) +
+  scale_x_discrete(labels = gsub(" ", "\n", levels(df$category))) +
+  labs(y = "Mean wound-responding score",
+       x = "",) +
+  facet_wrap(~celltype,
+             ncol = 2, 
+             scales = "free_y") +
+  theme_classic2() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1))
+```
+
+
+
+## MPs scoring
+### Summarize dataframe
+```{r}
+df <- bcca.mer@meta.data[,grepl("MP|patient_bcc", names(bcca.mer@meta.data))] %>% 
+  group_by(patient_bcc) %>% 
+  summarize(across(matches("MP"), mean, .names = "{.col}")) %>% 
+  left_join(., nimed[,c("patient_bcc", "category")], by = "patient_bcc") %>% 
+  mutate(category = ifelse(is.na(category),
+                           ifelse(grepl("_Tum", patient_bcc),
+                                  "SCC", "Advanced BCC"),
+                           as.character(category)),
+         category = factor(category,
+                           levels = c("Nodular","Infiltrative",
+                                      "Advanced BCC", "SCC")
+         )
+  ) %>% 
+  tidyr::pivot_longer(-c(patient_bcc, category),
+                      names_to = "Metaprogram",
+                      values_to = "Score")
+  
+```
+
+### Plot
+```{r}
+require(ggpubr)
+lycols <- c(
+            "Nodular" = "#FFFF6C",
+            "Infiltrative" = "#F44400",
             "Advanced BCC" = "red4",
             "SCC" = "violetred")
 
-# fix seed
-set.seed(22)
-pl <- all.mean %>% 
-  ggplot(aes(category, Mean_CAF_score,  fill = category)) +
-  geom_boxplot(outlier.colour = NA,
-               show.legend = F,
-               width = 0.6) +
-  geom_jitter(width = 0.1,
-              size = 3,
-              shape = 21,
-              fill = "white",
-              show.legend = F) +
-  scale_fill_manual(values = lycols) +
-  scale_x_discrete(labels = gsub(" ", "\n", levels(all.mean$category))) +
-  labs(y = "Wounding-response CAF score",
-       x = "",
-       title = "CAF single-cell RNA-seq") +
-  ggprism::theme_prism() +
-  theme(axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1))
-
-pl
-```
-
-### Stats
-one-sided t-test test
-```{r stats_CAF_score}
 comps <- list(c("SCC", "Advanced BCC"),
-              c("Advanced BCC", "Invasive BCC"),
-              c("Invasive BCC", "Non-invasive BCC"),
-              c("Non-invasive BCC", "Normal adjacent"))
+              c("Advanced BCC", "Infiltrative"),
+              c("Infiltrative", "Nodular"))
 
-pvals <- list()
-for(a in comps){
-  ding <- paste(a, collapse = "_vs_")
-  # Separate the values for each category
-  inf <- all.mean$Mean_CAF_score[all.mean$category == a[1]]
-  nod <- all.mean$Mean_CAF_score[all.mean$category == a[2]]
-  
-  # Perform t-test
-  w <- t.test(inf, nod, alternative = "greater")
-  pvals[[ding]] <- w$p.value
-}
-
-(adj.pval <- p.adjust(unlist(pvals), method = "fdr"))
-```
-
-## MP7 score
-### Plot
-```{r MP7_plot}
 set.seed(22)
-pl <- all.mean %>% 
-  filter(category != "Normal adjacent") %>% 
-  ggplot(aes(category, Mean_MP7_score,
-             fill = category)) +
+pl <- df %>% 
+  ggplot(aes(category, Score, fill = category)) +
   geom_boxplot(outlier.colour = NA,
                show.legend = F,
                width = 0.6) +
   geom_jitter(width = 0.1,
-              size = 3,
+              size = 2.5,
               shape = 21,
               fill = "white",
               show.legend = F) +
-  scale_fill_manual(values = lycols) +
-  scale_x_discrete(labels = levels(all.mean$category)[-1]) +
-  labs(y = "Mean MP7.WR score",
-       x = "",
-       title = "MP7 single-cell RNA-seq") +
-  ggprism::theme_prism() +
+  stat_compare_means(
+    comparisons = comps,
+    method = "wilcox.test", 
+    label = "p.format",
+    p.adjust.method = "BH",
+    size = 3.5
+  ) +
+scale_fill_manual(values = lycols) +
+  scale_x_discrete(labels = gsub(" ", "\n", levels(df$category))) +
+  labs(y = "Mean score in cancer cells",
+       x = "",) +
+  facet_wrap(~Metaprogram,
+             ncol = 4, 
+             scales = "free_y") +
+  theme_classic2() +
   theme(axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1))
 
-
-pl
 ```
 
 
-### Stats
-```{r stats_MP7}
-pvals <- list()
-# same comparisons as before except for normal adjacent
-for(a in comps[-4]){
-  ding <- paste(a, collapse = "_vs_")
-  # Separate the values for each category
-  inf <- all.mean$Mean_MP7_score[all.mean$category == a[1]]
-  nod <- all.mean$Mean_MP7_score[all.mean$category == a[2]]
-  
-  # Perform t-test
-  w <- t.test(inf, nod, alternative = "greater")
-
-  pvals[[ding]] <- w$p.value
-}
-
-(adj.pval7 <- p.adjust(unlist(pvals), method = "fdr"))
-```
-
-
-## Scoring correlations
-### MP7 vs CAF score
-```{r corr_MP7_CAF}
-pl <- all.mean %>% 
-  # get only BCC samples
-  filter(category %in% c("Invasive BCC", "Non-invasive BCC")) %>% 
-  ggplot(aes(Mean_CAF_score, Mean_MP7_score, fill = category)) +
-  geom_point(size = 4,
-             shape = 21,
-             color = "black") +
-  scale_fill_manual(values = lycols) +
-  labs(y = "Mean MP7 score in cancer cells",
-       x = "Mean wounding-response score in CAF",
-       color = "Subypes") +
-  ggprism::theme_prism() 
-
-pl
-```
-### Ni score vs CAF score
-```{r corr_NI_CAF}
-pl <- all.mean %>% 
-  # get only BCC samples
-  filter(category %in% c("Invasive BCC", "Non-invasive BCC")) %>% 
-  ggplot(aes(Mean_CAF_score, mean_ni_score,
-             fill = category)) +
-  geom_point(size = 4,
-             shape = 21,
-             color = "black") +
-  scale_fill_manual(values = lycols) +
-  labs(y = "Mean NI score in cancer cells",
-       x = "Mean wounding-response score in CAF",
-       color = "Subypes") +
-  ggprism::theme_prism() 
-
-pl
-```
 
 
 
