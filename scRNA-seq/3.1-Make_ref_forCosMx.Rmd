@@ -1,0 +1,146 @@
+---
+title: "Make a reference map of BCC cell types for supervised classification of CosMx data"
+author: "Massimo Andreatta"
+output: html_document
+date: "2024-02-28"
+---
+
+```{r setup, include=FALSE,fig.width=16,fig.height=12}
+renv::restore()
+library(Seurat)
+library(ggplot2)
+library(ProjecTILs)
+library(ggrastr)
+```
+
+# Set paths 
+
+```{r}
+anno_LY <- readRDS("cache/BCC_all_LY_clean_annotated.rds")
+```
+
+
+```{r}
+palette <- RColorBrewer::brewer.pal(10, name="Paired")
+names(palette) <- c("Cancer_cells","Normal_Kerat","Melanocyte","Endothelial",
+                                                  "Fibroblast","Mast","MoMacDC","Bcell","PlasmaCell","Tcell") 
+
+a <- DimPlot(anno_LY, reduction = "umap", group.by = "Sample") + theme(aspect.ratio = 1)
+a <- rasterize(a, layers='Point', dpi=300)
+
+ann <- DimPlot(anno_LY, group.by = "annotation", label = T, repel = T, cols = palette,
+               label.size = 3) +
+    theme(aspect.ratio = 1)
+
+ann <- rasterize(ann, layers='Point', dpi=300)
+
+(a | ann) & theme(axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank())
+```
+
+Include pericyte annotation
+```{r}
+palette <- RColorBrewer::brewer.pal(11, name="Paired")
+names(palette) <- c("Cancer_cells","Normal_Kerat","Melanocyte","Endothelial",
+                                                  "Fibroblast","Pericyte","Mast","MoMacDC","Bcell","PlasmaCell","Tcell") 
+
+DimPlot(anno_LY, group.by = "seurat_clusters")
+VlnPlot(anno_LY, features=c("RGS5","MCAM","PDGFRB"), group.by = "seurat_clusters",pt.size = 0)
+
+avg <- AverageExpression(anno_LY, features=c("RGS5"), assay="RNA", layer = "data", 
+                         group.by = "seurat_clusters", return.seurat = F)
+clust <- which(as.vector(avg$RNA > 1))
+
+anno_LY$annotation <- factor(anno_LY$annotation, levels=names(palette))
+anno_LY$annotation[anno_LY$seurat_clusters %in% clust] <- "Pericyte"
+```
+
+
+Only use genes in the cosmx panel
+```{r}
+cosmx_panel <- read.csv(file="_aux/cosmx_genepanel.csv")$x
+
+hvg <- VariableFeatures(anno_LY)
+hvg <- hvg[hvg %in% cosmx_panel]
+length(hvg)
+
+VariableFeatures(anno_LY) <- hvg
+
+anno_LY <- anno_LY |> ScaleData() |> RunPCA(npcs=30) |> RunUMAP(reduction = "pca", dims = 1:30)
+
+DimPlot(anno_LY, group.by = "annotation", label = T, repel = T, raster=T, pt.size=2,
+        cols = palette, label.size = 3) + theme(aspect.ratio = 1)
+ggsave("plots/BCC_LY_reference_umap.pdf", height=5, width=7)
+```
+
+
+```{r}
+genes <- c("PTCH1","SPON2","KRT6A","KRT5","KRT14","COL1A1","RGS5","MCAM","LYZ",
+           "HLA-DRA","CSF1R","CSF3R","G0S2","PMEL","PECAM1",
+           "CD2","CD3G","CD3E","CD79A","MS4A1","IGKC","MZB1","TPSAB1","CPA3")
+
+Idents(anno_LY) <- "annotation"
+DotPlot(anno_LY, features = unique(genes), cols="RdBu", scale=T, col.max=3) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+```
+
+#Use sketching to reduce size
+
+First, we keep all cells for rare cell types
+```{r}
+tab <- table(anno_LY$annotation)
+tab
+
+which.rare <- names(tab)[tab<500]
+cells.keep <- colnames(anno_LY)[anno_LY$annotation %in% which.rare]
+```
+
+Then sketch the rest
+```{r}
+tosketch <- subset(anno_LY, cells=cells.keep, invert=TRUE)
+
+ncells_ct <- 1000
+ncells <- length(unique(tosketch$annotation)) * ncells_ct
+
+ds <- SketchData(anno_LY,
+                 assay = "RNA",
+                 ncells = ncells,
+                 seed = 1234)
+
+cells.keep <- unique(c(colnames(ds[["sketch"]]), cells.keep))
+ds <- subset(ds, cells = cells.keep)
+
+table(ds$annotation)
+
+# remove sketch assay
+DefaultAssay(ds) <- "RNA"
+ds[["sketch"]] <- NULL
+
+```
+#Make BCC reference (also usable as ProjecTILs reference)
+```{r}
+ref.bcc <- make.reference(ref = ds, ndim = 30, seed = 1234, recalculate.umap = TRUE,
+    annotation.column = "annotation")
+```
+
+```{r}
+ref.bcc@misc$atlas.palette <- palette
+```
+
+```{r}
+DimPlot(ref.bcc, label = T, repel = T, label.size = 4, cols = palette) +
+  theme(aspect.ratio = 1) + NoLegend()
+```
+
+Export reference object (to be used for CosMx data annotation)
+```{r}
+saveRDS(ref.bcc, file="cache/BCC_human.rds")
+```
+
+
+
+
+
+
+

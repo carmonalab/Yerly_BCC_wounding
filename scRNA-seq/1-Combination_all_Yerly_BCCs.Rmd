@@ -17,13 +17,12 @@ library(patchwork)
 set.seed(123)
 ```
 
-Filtered count matrices can be downloaded from GEO (GSE181907): https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE181907
+First, download fltered count matrices from GEO: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE181907
 
 ## Import count matrices and gene names
-
 ```{r}
-#Set to your download directory
-ddir <- "~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/raw/CellRanger_LY/"
+#Set data_dir to your download directory 
+ddir <- "your_download_dir/CellRanger_LY/"
 matrix_dir = paste0(ddir, "LY021121_filtered_feature_bc_matrix/")
 
 features.path <- paste0(matrix_dir, "features.tsv.gz")

@@ -299,7 +299,6 @@ ggsave("plots/LY_signature_violin.pdf", width=7, height=4)
 # Save
 
 ```{r}
-#file_clean <- "M:/DER/LABOS/ONCODER/Laura/1-Experiments/4-Bioinformatic/Code_reproducibility/BCC_all_LY_clean_annotated.rds"
 file_clean <- "cache/BCC_all_LY_clean_annotated.rds"
 saveRDS(seu, file_clean)
 ```
@@ -309,7 +308,6 @@ Save cancer cells to file
 tumor <- subset(seu, subset=annotation == "Cancer_cells")
 
 file_cancer <- "cache/Tumor_LY.rds"
-#file_cancer <- "M:/DER/LABOS/ONCODER/Laura/1-Experiments/4-Bioinformatic/Code_reproducibility/Tumor_LY.rds"
 
 saveRDS(tumor, file_cancer)
 ```

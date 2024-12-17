@@ -17,7 +17,8 @@ The data can be downloaded from GEO (GSE266665): https://www.ncbi.nlm.nih.gov/ge
 
 Read count matrices
 ```{r}
-data_dir <- "~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/raw/Wounding_countmatrices"
+#Set data_dir to your download directory
+data_dir <- "your_download_dir/Wounding_countmatrices"
 
 all_samples <- list.files(path=data_dir, pattern = "Base|Wound|Unwound", full.names = T)
 sample_ids <- list.files(path=data_dir, pattern = "Base|Wound|Unwound", full.names = F)

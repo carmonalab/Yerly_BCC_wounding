@@ -131,12 +131,13 @@ ggsave("plots/plot_coefs_noMP7.pdf",p,width = 6, height = 4.3)
 Scatterplots of MP vs. NI score
 ```{r fig.height=6, fig.width=12}
 library(ggrastr)
+library(ggpubr)
 pll <- lapply(names(seu@misc$MP_signatures), function(mp) {
   mp <- sym(mp)
   a <- ggplot(sigs.score.data, aes(x=!!mp, y=ni_score)) +
   geom_point(size=0.5) + scale_color_viridis(option="B") +
-  geom_bin2d(bins=30) +  
-#  scale_fill_continuous(limits=c(0, 300)) +
+  stat_cor(p.digits=1, r.digits = 2, size=3) +
+  geom_bin2d(bins=30) + 
   theme_minimal() + theme(aspect.ratio = 1)
   rasterize(a, layers='Point', dpi=200)
 })
@@ -149,7 +150,8 @@ Split by sample
 ```{r fig.width=10}
 a <- ggplot(sigs.score.data, aes(x=MP7.WR, y=ni_score)) +
   geom_point(size=0.5) + scale_color_viridis(option="B") +
-     geom_bin2d(bins=30) +  
+    stat_cor(p.digits=1, r.digits = 2, size=3) +
+     geom_bin2d(bins=30) +
   theme_bw() + theme(aspect.ratio = 1)
 a + facet_wrap(~Sample, ncol = 6)
 
@@ -158,16 +160,43 @@ ggsave("plots/MP7_vs_NI_bysample.pdf", height=4, width=10)
 ```
 
 
+Average correlation coefficient by patient
 ```{r}
-p.scat.ED.WR <- ggplot(sigs.score.data, aes(x=MP7.WR, y=MP3.ED)) +
-  geom_point() + scale_color_viridis(option="B")  + 
-   geom_bin2d(bins=30) +  coord_fixed(ratio = 1) +  theme_minimal() 
-p.scat.ED.WR
+corr <- lapply(names(seu@misc$MP_signatures), function(mp) {
+  v <- c()
+  for (s in unique(sigs.score.data$Sample)) {
+    sub <- sigs.score.data[sigs.score.data$Sample == s,]
+    v[s] <- cor(x=sub[,mp], y=sub[,"ni_score"], method="pearson")
+  }
+  v
+}) 
+names(corr) <- names(seu@misc$MP_signatures)
+df <- as.data.frame(corr)
+
+#sort by mean MP activity
+avgs <- apply(df, 2, mean)
+order <- sort(avgs, decreasing = T)
+
+df$Sample <- rownames(df)
+melt <- reshape2::melt(df)
+colnames(melt) <- c("Sample","MP","Correlation")
+melt$MP <- factor(melt$MP, levels=names(order))
+
+cols <- c("red","forestgreen","blue","deeppink","darkcyan","orange","darkmagenta")
+names(cols) <- names(seu@misc$MP_signatures)
+
+a <- ggplot(melt, aes(y = Correlation, x = MP, fill=MP)) +
+    scale_fill_manual(values=cols) +
+    geom_hline(yintercept=0, linetype='dotted') +
+    geom_boxplot(width=0.8, color="black", outlier.size = 2) +
+    theme_classic2() +
+    theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("Correlation with NI score by sample (N=11)")
+a
+
+ggsave("plots/MPs_vs_NI_correlation_by_sample.pdf", height=4.5, width=4.5)
 ```
 
-```{r}
-p.scat.ED.WR + facet_wrap(~Sample)
-```
 
 ```{r}
 intervals <- levels(cut(sigs.score.data$ni_score, breaks = 3))

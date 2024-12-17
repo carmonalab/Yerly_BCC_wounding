@@ -1,0 +1,179 @@
+---
+title: "Meta-programs explaining infiltrative vs hedgehog pathway signature"
+author: "Massimo Andreatta"
+date: "`r format(Sys.Date(),'%e de %B, %Y')`"
+output: 
+  rmdformats::downcute:
+    lightbox: true
+    thumbnails: false
+    self_contained: true
+    gallery: true
+    code_folding: show
+  pkgdown:
+    as_is: true
+---
+
+```{r, include=FALSE, fig.width=16, fig.height=12}
+renv::restore()
+library(Seurat)
+library(ggplot2)
+library(SignatuR)
+library(UCell)
+library(patchwork)
+library(tidyr)
+library(dplyr)
+library(RColorBrewer)
+library(viridis)
+```
+
+
+## Set the paths
+
+Read in source data
+```{r}
+seu <- readRDS("_aux/BCC_seurat_NMFprograms.rds")
+```
+
+
+```{r}
+seu@misc$MP_signatures
+nprogs <- length(seu@misc$MP_signatures)
+
+seu@misc$MP_scale
+seu@reductions[["NMFsignatures"]]
+table(seu$Sample)
+seu$batch <- factor(seu$orig.ident)
+table(seu$batch)
+```
+
+Calculate the HH (hedgehog pathway) score, from hallmark signatures
+
+```{r}
+HHs <- read.csv("_aux/HH_signatures.csv")
+HHs <- as.list(HHs)
+HHs <- lapply(HHs, function(x) x[x!=""])
+
+#UCell scores
+seu <- AddModuleScore_UCell(seu, features = HHs, assay="RNA", ncores=4, name = "")
+
+hist(seu$HALLMARK_HEDGEHOG_SIGNALING, breaks=50)
+hist(seu$KEGG_HEDGEHOG_SIGNALING_PATHWAY, breaks=50)
+
+plot(seu$HALLMARK_HEDGEHOG_SIGNALING, seu$KEGG_HEDGEHOG_SIGNALING_PATHWAY)
+```
+
+
+```{r}
+#which.HH <- "HALLMARK_HEDGEHOG_SIGNALING"
+which.HH <- "KEGG_HEDGEHOG_SIGNALING_PATHWAY"
+
+seu$HHscore <- seu@meta.data[,which.HH]
+
+sigs.score.data <- seu@meta.data[,c(grep("MP",names(seu@meta.data),value = T),
+                                    "HHscore","patient_bcc","batch")]
+colnames(sigs.score.data)[colnames(sigs.score.data) == "patient_bcc"] <- "Sample"
+head(sigs.score.data)
+```
+
+```{r}
+sigs.score.data$batch <- factor(sigs.score.data$batch, labels = c("BCC_Yerly","BCC_Ganier"))
+```
+
+Look at HH score per sample and batch/cohort
+
+```{r}
+ggplot(sigs.score.data,aes(x=HHscore))+geom_histogram()+facet_wrap(~Sample)+theme_bw()
+```
+
+```{r}
+ggplot(sigs.score.data,aes(x=HHscore))+geom_histogram()+facet_wrap(~batch)+theme_bw()
+```
+
+
+Scatterplots of MP vs. HH score
+```{r fig.height=7, fig.width=14}
+library(ggrastr)
+library(ggpubr)
+
+pll <- lapply(names(seu@misc$MP_signatures), function(mp) {
+  mp <- sym(mp)
+  a <- ggplot(sigs.score.data, aes(x=!!mp, y=HHscore)) +
+  geom_point(size=0.5) + scale_color_viridis(option="B") +
+  stat_cor(p.digits=2, r.digits = 2, size=3) +
+  geom_bin2d(bins=30) +  
+#  scale_fill_continuous(limits=c(0, 300)) +
+  theme_minimal() + theme(aspect.ratio = 1)
+  rasterize(a, layers='Point', dpi=200)
+})
+
+wrap_plots(pll, nrow=2)
+```
+
+Split by sample
+```{r fig.width=14}
+a <- ggplot(sigs.score.data, aes(x=MP7.WR, y=HHscore)) +
+  geom_point(size=0.5) + scale_color_viridis(option="B") +
+  stat_cor(p.digits=2, r.digits = 2, size=3) +
+     geom_bin2d(bins=30) +
+  theme_classic2() + theme(aspect.ratio = 1)
+a + facet_wrap(~Sample, ncol = 6)
+ggsave("plots/MP7_vs_HH_bysample.pdf", height=5, width=12)
+
+b <- ggplot(sigs.score.data, aes(x=MP2, y=HHscore)) +
+  geom_point(size=0.5) + scale_color_viridis(option="B") +
+   stat_cor(p.digits=2, r.digits = 2, size=3) +
+     geom_bin2d(bins=30) +  
+  theme_classic2() + theme(aspect.ratio = 1)
+b + facet_wrap(~Sample, ncol = 6)
+ggsave("plots/MP2_vs_HH_bysample.pdf", height=5, width=12)
+
+```
+
+Average correlation coefficient by patient
+```{r}
+corr <- lapply(names(seu@misc$MP_signatures), function(mp) {
+  v <- c()
+  for (s in unique(sigs.score.data$Sample)) {
+    sub <- sigs.score.data[sigs.score.data$Sample == s,]
+    v[s] <- cor(x=sub[,mp], y=sub[,"HHscore"], method="pearson")
+  }
+  v
+}) 
+names(corr) <- names(seu@misc$MP_signatures)
+df <- as.data.frame(corr)
+
+#sort by mean MP activity
+avgs <- apply(df, 2, mean)
+order <- sort(avgs, decreasing = T)
+
+df$Sample <- rownames(df)
+melt <- reshape2::melt(df)
+colnames(melt) <- c("Sample","MP","Correlation")
+melt$MP <- factor(melt$MP, levels=names(order))
+
+cols <- c("red","forestgreen","blue","deeppink","darkcyan","orange","darkmagenta")
+names(cols) <- names(seu@misc$MP_signatures)
+
+a <- ggplot(melt, aes(y = Correlation, x = MP, fill=MP)) +
+    scale_fill_manual(values=cols) +
+    geom_hline(yintercept=0, linetype='dotted') +
+    geom_boxplot(width=0.8, color="black", outlier.size = 2) +
+    theme_classic2() +
+    theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("Correlation with HH score by sample (N=11)")
+a
+
+ggsave("plots/MPs_vs_HH_correlation_by_sample.pdf", height=4.5, width=4.5)
+```
+
+
+No gene set overlap between MPs and HH signatures
+
+```{r}
+library(UpSetR)
+
+# example of list input (list of named vectors)
+listInput <- append(seu@misc$MP_signatures, list(HH_Hallmark=HHs$HALLMARK_HEDGEHOG_SIGNALING,
+                                                HH_KEGG=HHs$KEGG_HEDGEHOG_SIGNALING_PATHWAY))
+upset(fromList(listInput), order.by = "freq",nsets = 20)
+```

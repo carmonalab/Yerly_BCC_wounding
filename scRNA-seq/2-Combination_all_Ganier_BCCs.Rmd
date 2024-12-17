@@ -18,10 +18,13 @@ library(Seurat)
 library(Matrix)
 ```
 
-Read count matrices
+First, download matrices from ArrayExpress:
+https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-13085
+
+# Read count matrices
 ```{r}
-#Replace with download directory 
-data_dir <- "~/Dropbox/CSI/Collaborations/Kuonen_BCC/data/raw/CellRanger_Ganier"
+#Set data_dir to your download directory
+data_dir <- "your_download_dir/CellRanger_Ganier"
 
 all_samples <- list.files(path=data_dir, pattern = "^WS_", full.names = T)
 sample_ids <- gsub(pattern="\\S+(\\d{3}$)", replacement = "\\1", x=all_samples)
