@@ -8,3 +8,4 @@
 */*.rds
 .Rprofile
 */.Rprofile
+scRNA-seq/_aux/*rds

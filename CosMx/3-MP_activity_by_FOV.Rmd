@@ -146,6 +146,41 @@ ggsave("plots/MPs_by_nodinf_faceted.pdf", height=4, width = 11)
 
 ```
 
+MP7 - MP2
+```{r fig.width=11, fig.height=4}
+min.cells <- 200
+
+means_diff <- aggregate(cancer@meta.data[, "MP7-MP2"], list(fov = cancer$pat_fov,
+                                                        morph = cancer$Morphology,
+                                                        pat = cancer$Patient_ID),
+                   mean)
+colnames(means_diff)[4] <- "MP7-MP2"
+  
+npoints <- aggregate(cancer@meta.data[, 1], list(fov = cancer$pat_fov, morph = cancer$Morphology), length)
+
+nrow(means_diff)
+means_diff <- means_diff[npoints$x > min.cells, ]
+nrow(means_diff)
+
+melt <- reshape2::melt(means_diff)
+colnames(melt) <- c("fov", "Morphology", "Patient", "Metaprogram", "Average_UCell_score_by_FOV")
+
+p <- ggplot(melt, aes(x=Patient, y=Average_UCell_score_by_FOV, fill=Morphology)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(fill = Morphology), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) +
+  theme_classic2() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ylim(c(-0.06,0.1)) +
+  ggtitle("MP7-MP2 by FOV") +
+  ylab("MP7 - MP2 by FOV") +
+  scale_fill_manual(values=c("#F44400","#FFFF6C"))  +
+  stat_compare_means(label="p.format", size=3)
+p
+
+ggsave("plots/MP7-MP2_byFOV_bypatient.pdf", height=4, width = 4)
+
+```
+
 
 # Differences in wounded vs. unwounded vs. baseline
 

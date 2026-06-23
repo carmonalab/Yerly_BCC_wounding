@@ -483,6 +483,78 @@ px
 ggsave("plots/morph_complexity_by_wounding.pdf", height=4.5, width=3.5)
 ```
 
+Scatterplot of heterotypic/homotypic ratio vs. mean MP7 score per FOV, colored by morphology, faceted by patient
+```{r fig.height=4, fig.width=8}
+# Mean MP7 score per FOV for cancer cells
+cancer_meta <- seu.obj@meta.data[seu.obj@meta.data$celltype == "Cancer.cells", ]
+
+mp7_per_fov <- cancer_meta %>%
+  group_by(pat_fov) %>%
+  summarise(MP7_mean = mean(MP7.WoundResp, na.rm = TRUE),
+            Patient_ID = first(Patient_ID))
+
+# Join with tab
+tab_mp7 <- tab
+tab_mp7$pat_fov <- rownames(tab_mp7)
+tab_mp7 <- left_join(tab_mp7, mp7_per_fov, by = "pat_fov")
+
+tab_mp7 <- tab_mp7[tab_mp7$Condition %in% c("Ulcerated_nodular") & tab_mp7$Morphology %in% c("Nodular","Infiltrative"),]
+
+morph_colors <- c("Nodular" = "#FFFF6C", "Infiltrative" = "#F44400")
+
+ps <- ggplot(tab_mp7, aes(x = MP7_mean, y = hetero_fraction, color = Morphology)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, aes(group = 1), color = "grey40", linewidth = 0.7) +
+  stat_cor(aes(x = MP7_mean, y = hetero_fraction), inherit.aes = FALSE, method = "pearson", label.x.npc = "left", label.y.npc = "top", size = 3) +
+  scale_color_manual(values = morph_colors) +
+  theme_classic2() +
+  labs(x = "Mean MP7 score",
+       y = "Heterotypic/homotypic ratio",
+       title = "Complexity vs. MP7 score",
+       color = "Morphology") +
+  theme(legend.position = "right") +
+  facet_wrap(~Patient_ID, scales = "free")
+ps
+
+ggsave("plots/hetero_vs_MP7_by_patient.pdf", height=4, width=8)
+```
+
+
+```{r fig.height=4, fig.width=8}
+# Mean invasiveness (MP7-MP2) score per FOV for cancer cells
+cancer_meta <- seu.obj@meta.data[seu.obj@meta.data$celltype == "Cancer.cells", ]
+
+mp7_per_fov <- cancer_meta %>%
+  group_by(pat_fov) %>%
+  summarise(MP7_mean = mean(invasiveness, na.rm = TRUE),
+            Patient_ID = first(Patient_ID))
+
+# Join with tab
+tab_mp7 <- tab
+tab_mp7$pat_fov <- rownames(tab_mp7)
+tab_mp7 <- left_join(tab_mp7, mp7_per_fov, by = "pat_fov")
+
+tab_mp7 <- tab_mp7[tab_mp7$Condition %in% c("Ulcerated_nodular") & tab_mp7$Morphology %in% c("Nodular","Infiltrative"),]
+
+morph_colors <- c("Nodular" = "#FFFF6C", "Infiltrative" = "#F44400")
+
+ps <- ggplot(tab_mp7, aes(x = MP7_mean, y = hetero_fraction, color = Morphology)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, aes(group = 1), color = "grey40", linewidth = 0.7) +
+  stat_cor(aes(x = MP7_mean, y = hetero_fraction), inherit.aes = FALSE, method = "pearson", label.x.npc = "left", label.y.npc = "top", size = 3) +
+  scale_color_manual(values = morph_colors) +
+  theme_classic2() +
+  labs(x = "Mean MP7-MP2 score",
+       y = "Heterotypic/homotypic ratio",
+       title = "Complexity vs. MP7-MP2 score",
+       color = "Morphology") +
+  theme(legend.position = "right") +
+  facet_wrap(~Patient_ID, scales = "free")
+ps
+
+ggsave("plots/hetero_vs_MP7-MP2_by_patient.pdf", height=4, width=8)
+```
+
 # Represent interactome within a sample as a graph
 ```{r}
 set.seed(1234)
