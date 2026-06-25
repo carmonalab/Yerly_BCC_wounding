@@ -154,6 +154,24 @@ ggsave("plots/logratios_celltypes_Nod_vs_Inf.pdf", height=4, width=7)
 ```
 
 
+
+```{r fig.height=6, fig.width=9}
+which.celltypes <- c("Cancer.cells")
+
+this <- freq.m[freq.m$Condition == "Ulcerated_nodular" & freq.m$Morphology %in% c("Infiltrative","Nodular"),]
+this <- this[this$Celltype %in% which.celltypes,]
+
+ggplot(this, aes(x=Celltype, y=value, fill=Morphology)) + geom_boxplot(position="dodge2",outlier.shape = NA) +
+  geom_point(aes(fill = Morphology), size = 2, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) +
+  theme_classic2() + ggtitle("Cancer cell fraction") +
+  ylim(c(0,1)) +
+  theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+  scale_fill_manual(values=c("#F44400","#FFFF6C")) +
+  stat_compare_means(label="p.format", size=4)
+ggsave("plots/freqs_cancer_cells_Nod_vs_Inf.pdf", height=3.4, width=3.7)
+```
+
+
 2. Compositional differences between baseline vs. wounded vs. unwounded samples
 
 ```{r fig.height=8, fig.width=12}

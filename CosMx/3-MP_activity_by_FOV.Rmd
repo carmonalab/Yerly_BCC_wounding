@@ -98,7 +98,9 @@ min.cells <- 200
 means <- aggregate(cancer@meta.data[, names(mps)], list(fov = cancer$pat_fov, morph = cancer$Morphology), mean)
 npoints <- aggregate(cancer@meta.data[, 1], list(fov = cancer$pat_fov, morph = cancer$Morphology), length)
 
+nrow(means)
 means <- means[npoints$x > min.cells, ]
+nrow(means)
 
 melt <- reshape2::melt(means)
 colnames(melt) <- c("fov", "Morphology", "Metaprogram", "Average_UCell_score_by_FOV")
