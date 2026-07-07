@@ -252,6 +252,36 @@ p3.1
 ggsave("plots/MP_score_by_fov_wounding_dist.pdf", height=5, width=12)
 ```
 
+Now for MP7 - MP2
+
+```{r fig.width=5, fig.height=5}
+min.cells <- 200
+
+#my_comparisons <- list(c("Baseline","Wound_Close"),c("Unwound","Wound_Close"))
+my_comparisons <- list(c("Baseline","Wound_Close"),c("Unwound","Wound_Close"),c("Baseline","Wound_Far"),c("Unwound","Wound_Far"))
+
+means <- aggregate(cancer@meta.data[, "MP7-MP2"], list(fov = cancer$pat_fov, cond = cancer$Condition2), mean)
+npoints <- aggregate(cancer@meta.data[, 1], list(fov = cancer$pat_fov, cond = cancer$Condition2), length)
+
+nrow(means)
+means <- means[npoints$x > min.cells, ]
+nrow(means)
+
+melt <- reshape2::melt(means)
+colnames(melt) <- c("fov", "Condition2", "Metaprogram", "Average_UCell_score_by_FOV")
+melt$Condition2 <- factor(melt$Condition2, levels=c("Baseline","Unwound","Wound_Far","Wound_Close"))
+
+pdiff <- ggplot(melt, aes(x=Condition2, y=Average_UCell_score_by_FOV, fill=Condition2)) + 
+  geom_boxplot(outlier.shape = NA) + theme_classic2() +
+  geom_point(aes(fill = Condition2), size = 0.8, shape = 21, position = position_jitterdodge(jitter.width = 0.2)) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), axis.title.x = element_blank()) +
+  ggtitle("MP7-MP2 activity (cancer cells)") +
+  scale_fill_manual(values=c("#07f495","#f4ec07","orange","#f44007")) +
+  stat_compare_means(comparisons = my_comparisons, size=3)
+pdiff
+ggsave("plots/MP7-MP2_score_by_fov_wounding_dist.pdf", height=4.8, width=3.8)
+```
+
 
 On CAFs, calculate average signature activity by FOV
 ```{r}
